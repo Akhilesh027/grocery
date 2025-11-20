@@ -7,8 +7,10 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const multer = require('multer');
 const path = require('path');
-const fs = require('fs');
-const { v4: uuidv4 } = require('uuid');
+const fs = require("fs");
+const { v4: uuidv4 } = require("uuid");
+const { CloudinaryStorage } = require("multer-storage-cloudinary");
+const cloudinary = require("cloudinary").v2;
 
 require('dotenv').config();
 
@@ -24,41 +26,90 @@ app.use(express.urlencoded({ extended: true }));
 // Serve static files
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Ensure uploads directory exists
-const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
-
-// Multer configuration for file uploads
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, uploadsDir);
-  },
-  filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, 'category-' + uniqueSuffix + path.extname(file.originalname));
-  }
+// Cloudinary Configuration
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || "YOUR_CLOUD_NAME",
+  api_key: process.env.CLOUDINARY_API_KEY || "YOUR_API_KEY",
+  api_secret: process.env.CLOUDINARY_API_SECRET || "YOUR_API_SECRET",
 });
 
-const fileFilter = (req, file, cb) => {
-  if (file.mimetype.startsWith('image/')) {
-    cb(null, true);
-  } else {
-    cb(new Error('Only image files are allowed!'), false);
-  }
-};
+// -------------------
+// Multer Storage Configurations
+// -------------------
 
-const upload = multer({
-  storage: storage,
-  fileFilter: fileFilter,
+// Cloudinary Storage for Categories
+const categoryStorage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: "categories",
+    allowed_formats: ["jpg", "jpeg", "png", "webp", "gif"],
+    transformation: [
+      { width: 800, height: 600, crop: "limit", quality: "auto" }
+    ]
+  },
+});
+
+// Cloudinary Storage for Banners
+const bannerStorage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: "banners",
+    allowed_formats: ["jpg", "jpeg", "png", "webp", "gif"],
+    transformation: [
+      { width: 1200, height: 400, crop: "limit", quality: "auto" }
+    ]
+  },
+});
+
+// Cloudinary Storage for Products
+const productStorage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: "products",
+    allowed_formats: ["jpg", "jpeg", "png", "webp", "gif"],
+    transformation: [
+      { width: 600, height: 600, crop: "limit", quality: "auto" }
+    ]
+  },
+});
+
+// Multer upload instances
+const uploadCategory = multer({ 
+  storage: categoryStorage,
   limits: {
     fileSize: 5 * 1024 * 1024 // 5MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed!'), false);
+    }
   }
 });
 
-// Database Connection
-mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://akhileshreddy811_db_user:KSco7zl1NdnbuwJi@cluster0.8qws5ov.mongodb.net/?appName=Cluster0', {
+const uploadBanner = multer({ 
+  storage: bannerStorage,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed!'), false);
+    }
+  }
+});
+
+const uploadProduct = multer({ 
+  storage: productStorage,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB limit
+  }
+});
+
+mongoose.connect(process.env.MONGODB_URIs, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
 });
@@ -68,9 +119,6 @@ db.on('error', console.error.bind(console, 'MongoDB connection error:'));
 db.once('open', () => {
   console.log('Connected to MongoDB');
 });
-
-// ==================== SCHEMAS ====================
-
 // User Schema
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
@@ -87,26 +135,98 @@ const User = mongoose.model("User", userSchema);
 
 // Product Schema
 const ProductSchema = new mongoose.Schema({
+  // Basic Information
   title: { type: String, required: true },
   subtitle: String,
+  sku: { type: String, required: true, unique: true },
+  
+  // Pricing
   price: { type: Number, required: true },
   mrp: { type: Number, required: true },
   discount: Number,
-  image: String,
+  
+  images: [String],
+  // Inventory
   inStock: { type: Boolean, default: true },
   stockQuantity: { type: Number, default: 0 },
-  deliveryTime: String,
-  rating: { type: Number, default: 0 },
+  lowStockAlert: { type: Number, default: 10 },
+  
+  // Categorization
   category: {
-    mainCategory: String,
-    subCategory: String
+    mainCategory: { type: String, required: true },
+    subCategory: String,
+    offerCategory: { type: mongoose.Schema.Types.ObjectId, ref: 'OfferCategory' },
+    offerSubCategory: { type: mongoose.Schema.Types.ObjectId, ref: 'OfferSubCategory' }
   },
+  
+  // Product Details
   brand: String,
+  description: String,
+  specifications: [{
+    key: String,
+    value: String
+  }],
+  
+  // Physical Attributes
+  weight: String,
+  dimensions: String,
+  
+  // Shipping
+  shippingWeight: Number,
+  isFreeShipping: { type: Boolean, default: false },
+  
+  // Delivery & Logistics
+  deliveryTime: String,
+  
+  // Marketing Flags
   isTopSelling: { type: Boolean, default: false },
   isTodaysDeal: { type: Boolean, default: false },
   isHotDeal: { type: Boolean, default: false },
+  isFeatured: { type: Boolean, default: false },
+  
+  // SEO
+  metaTitle: String,
+  metaDescription: String,
+  slug: String,
+  
+  // Status
+  status: { type: String, enum: ['active', 'draft', 'archived'], default: 'draft' },
+  
+  // Analytics
+  viewCount: { type: Number, default: 0 },
+  purchaseCount: { type: Number, default: 0 },
+  
+  // Timestamps
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
+});
+
+// Generate SKU before saving
+ProductSchema.pre('save', function(next) {
+  if (!this.sku) {
+    const timestamp = Date.now().toString().slice(-6);
+    const random = Math.random().toString(36).substring(2, 5).toUpperCase();
+    const brandPrefix = this.brand ? 
+      this.brand.replace(/\s+/g, '').substring(0, 3).toUpperCase() : 'PRO';
+    this.sku = `${brandPrefix}-${timestamp}-${random}`;
+  }
+  
+  // Generate slug from title
+  if (this.title && !this.slug) {
+    this.slug = this.title
+      .toLowerCase()
+      .replace(/[^a-z0-9 -]/g, '')
+      .replace(/\s+/g, '-')
+      .replace(/-+/g, '-');
+  }
+  
+  // Calculate discount
+  if (this.mrp && this.price) {
+    this.discount = Math.round(((this.mrp - this.price) / this.mrp) * 100);
+  }
+  
+  this.updatedAt = new Date();
+  next();
 });
 
 const Product = mongoose.model('Product', ProductSchema);
@@ -155,7 +275,7 @@ const CategorySchema = new mongoose.Schema({
   type: { type: String, enum: ['main', 'sub'], required: true },
   parentCategory: String,
   icon: String,
-  bannerImage: String,
+  bannerImage: String, // This will store Cloudinary URL
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -212,7 +332,7 @@ const orderSchema = new mongoose.Schema({
   discount: Number,
   deliveryFee: Number,
   total: Number,
-  coinsEarned: Number,
+
   status: {
     type: String,
     enum: ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled'],
@@ -227,8 +347,31 @@ const orderSchema = new mongoose.Schema({
     type: String,
     enum: ['new', 'processing', 'shipped', 'delivered', 'cancelled'],
     default: 'new'
+  }, 
+  coinsEarned: {
+    type: Number,
+    default: 0
   },
-  totalAmount: Number
+  referralCoinsUsed: {
+    type: Number,
+    default: 0
+  },
+      statusHistory: [{
+    status: {
+      type: String,
+      enum: ['new', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled']
+    },
+    timestamp: {
+      type: Date,
+      default: Date.now
+    },
+    notes: String,
+    updatedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    }
+  }],
+  totalAmount: Number,
 }, {
   timestamps: true
 });
@@ -359,17 +502,75 @@ const referralUsageSchema = new mongoose.Schema({
 
 const ReferralUsage = mongoose.model('ReferralUsage', referralUsageSchema);
 
-// Zone Schema
-const ZoneSchema = new mongoose.Schema({
+const zoneSchema = new mongoose.Schema({
   name: { type: String, required: true },
-  pincodes: [String],
-  deliveryFee: { type: Number, default: 0 },
-  minimumOrderValue: { type: Number, default: 0 },
-  createdAt: { type: Date, default: Date.now }
+  pincodes: { type: [String], required: true },
+  deliveryFee: { type: Number, required: true },
+  minimumOrderValue: { type: Number, required: true },
 });
 
-const Zone = mongoose.model('Zone', ZoneSchema);
+const Zone = mongoose.model('Zone', zoneSchema);
 
+const BannerSchema = new mongoose.Schema({
+  name: String,
+  imageUrl: String // This will store Cloudinary URL
+});
+
+const Banner = mongoose.model("Banner", BannerSchema);
+// Loyalty Transaction Schema
+const loyaltyTransactionSchema = new mongoose.Schema({
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  type: {
+    type: String,
+    enum: [
+      'admin_added',
+      'admin_deducted', 
+      'purchase_earned',
+      'referral_earned',
+      'referral_used',
+      'order_used',
+      'expired'
+    ],
+    required: true
+  },
+  coins: {
+    type: Number,
+    required: true
+  },
+  previousBalance: {
+    type: Number,
+    required: true
+  },
+  newBalance: {
+    type: Number,
+    required: true
+  },
+  reason: {
+    type: String,
+    required: true
+  },
+  orderId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Order'
+  },
+  adminId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  status: {
+    type: String,
+    enum: ['pending', 'completed', 'cancelled'],
+    default: 'completed'
+  }
+}, {
+  timestamps: true
+});
+
+const LoyaltyTransaction = mongoose.model('LoyaltyTransaction', loyaltyTransactionSchema);
 // Delivery Staff Schema
 const DeliveryStaffSchema = new mongoose.Schema({
   name: { type: String, required: true },
@@ -384,6 +585,112 @@ const DeliveryStaffSchema = new mongoose.Schema({
 });
 
 const DeliveryStaff = mongoose.model('DeliveryStaff', DeliveryStaffSchema);
+const offerCategorySchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: true
+  },
+  icon: {
+    type: String,
+    required: true
+  },
+  color: {
+    type: String,
+    default: '#EF4444'
+  },
+  isActive: {
+    type: Boolean,
+    default: true
+  },
+  displayOrder: {
+    type: Number,
+    default: 0
+  }
+}, { timestamps: true });
+
+const offerSubCategorySchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: true
+  },
+  image: {
+    type: String,
+    required: true
+  },
+  category: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'OfferCategory',
+    required: true
+  },
+  isActive: {
+    type: Boolean,
+    default: true
+  }
+}, { timestamps: true });
+
+const offerSchema = new mongoose.Schema({
+  title: {
+    type: String,
+    required: true
+  },
+  description: {
+    type: String,
+    required: true
+  },
+  discount: {
+    type: String,
+    required: true
+  },
+  code: {
+    type: String,
+    required: true,
+    unique: true
+  },
+  image: {
+    type: String,
+    required: true
+  },
+  category: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'OfferCategory',
+    required: true
+  },
+  subcategory: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'OfferSubCategory',
+    required: true
+  },
+  startDate: {
+    type: Date,
+    default: Date.now
+  },
+  endDate: {
+    type: Date
+  },
+  isActive: {
+    type: Boolean,
+    default: true
+  },
+  usageLimit: {
+    type: Number,
+    default: 1000
+  },
+  usedCount: {
+    type: Number,
+    default: 0
+  },
+  minOrderValue: {
+    type: Number,
+    default: 0
+  },
+  maxDiscount: {
+    type: Number
+  }
+}, { timestamps: true });
+
+const OfferCategory = mongoose.model('OfferCategory', offerCategorySchema);
+const OfferSubCategory = mongoose.model('OfferSubCategory', offerSubCategorySchema);
+const Offer = mongoose.model('Offer', offerSchema);
 
 // ==================== MIDDLEWARE ====================
 
@@ -408,6 +715,24 @@ function generateReferralCode(name) {
   const prefix = name ? name.slice(0, 3).toUpperCase() : "USR";
   return prefix + random;
 }
+
+// Cloudinary utility functions
+const deleteFromCloudinary = async (imageUrl) => {
+  try {
+    if (!imageUrl) return;
+    
+    // Extract public_id from Cloudinary URL
+    const publicId = imageUrl.split('/').slice(-1)[0].split('.')[0];
+    const folder = imageUrl.split('/').slice(-2, -1)[0];
+    
+    const fullPublicId = `${folder}/${publicId}`;
+    
+    await cloudinary.uploader.destroy(fullPublicId);
+    console.log(`Deleted image from Cloudinary: ${fullPublicId}`);
+  } catch (error) {
+    console.error('Error deleting from Cloudinary:', error);
+  }
+};
 
 // ==================== ROUTES ====================
 
@@ -533,16 +858,10 @@ app.get('/api/categories', async (req, res) => {
   }
 });
 
-// Create category
-app.post('/api/categories', upload.single('bannerImage'), async (req, res) => {
+// Create category with Cloudinary upload
+app.post('/api/categories', uploadCategory.single('bannerImage'), async (req, res) => {
   try {
     const { name, type, parentCategory, icon } = req.body;
-
-    let bannerImageUrl = '';
-
-    if (req.file) {
-      bannerImageUrl = '/uploads/' + req.file.filename;
-    }
 
     if (!name || !type) {
       return res.status(400).json({ message: 'Name and type are required' });
@@ -557,24 +876,27 @@ app.post('/api/categories', upload.single('bannerImage'), async (req, res) => {
       return res.status(400).json({ message: 'Category with this name already exists' });
     }
 
-    const category = new Category({
+    // Cloudinary uploaded image URL
+    const bannerImageUrl = req.file ? req.file.path : '';
+
+    const category = await Category.create({
       name,
       type,
-      parentCategory: type === 'sub' ? parentCategory : null,
+      parentCategory: type === "sub" ? parentCategory : null,
       icon,
       bannerImage: bannerImageUrl,
     });
 
-    await category.save();
     res.status(201).json(category);
+
   } catch (error) {
     console.error('Error creating category:', error);
     res.status(500).json({ message: error.message });
   }
 });
 
-// Update category
-app.put('/api/categories/:id', upload.single('bannerImage'), async (req, res) => {
+// Update category with Cloudinary
+app.put('/api/categories/:id', uploadCategory.single('bannerImage'), async (req, res) => {
   try {
     const { name, type, parentCategory, icon } = req.body;
     const categoryId = req.params.id;
@@ -586,21 +908,22 @@ app.put('/api/categories/:id', upload.single('bannerImage'), async (req, res) =>
 
     let bannerImageUrl = existingCategory.bannerImage;
 
+    // If new image uploaded
     if (req.file) {
+      // Delete old image from Cloudinary
       if (existingCategory.bannerImage) {
-        const oldImagePath = path.join(__dirname, existingCategory.bannerImage);
-        if (fs.existsSync(oldImagePath)) {
-          fs.unlinkSync(oldImagePath);
-        }
+        await deleteFromCloudinary(existingCategory.bannerImage);
       }
-      bannerImageUrl = '/uploads/' + req.file.filename;
+
+      // Use new uploaded image from Cloudinary
+      bannerImageUrl = req.file.path;
     }
 
     const updateData = {
       name,
       type,
       icon,
-      parentCategory: type === 'sub' ? parentCategory : null,
+      parentCategory: type === "sub" ? parentCategory : null,
       bannerImage: bannerImageUrl
     };
 
@@ -611,13 +934,14 @@ app.put('/api/categories/:id', upload.single('bannerImage'), async (req, res) =>
     );
 
     res.json(updatedCategory);
+
   } catch (error) {
     console.error('Error updating category:', error);
     res.status(500).json({ message: error.message });
   }
 });
 
-// Delete category
+// Delete category with Cloudinary cleanup
 app.delete('/api/categories/:id', async (req, res) => {
   try {
     const category = await Category.findById(req.params.id);
@@ -637,11 +961,9 @@ app.delete('/api/categories/:id', async (req, res) => {
       }
     }
 
+    // Delete banner image from Cloudinary
     if (category.bannerImage) {
-      const imagePath = path.join(__dirname, category.bannerImage);
-      if (fs.existsSync(imagePath)) {
-        fs.unlinkSync(imagePath);
-      }
+      await deleteFromCloudinary(category.bannerImage);
     }
 
     await Category.findByIdAndDelete(req.params.id);
@@ -652,35 +974,34 @@ app.delete('/api/categories/:id', async (req, res) => {
   }
 });
 
-// ==================== PRODUCT ROUTES ====================
-
-// Get all products
 app.get('/api/products', async (req, res) => {
   try {
     const { page = 1, limit = 10, search, category, stockStatus } = req.query;
     
     let query = {};
-    
+
     if (search) {
       query.$or = [
-        { title: { $regex: search, $options: 'i' } },
-        { 'category.mainCategory': { $regex: search, $options: 'i' } }
+        { title: { $regex: search, $options: "i" } },
+        { "category.mainCategory": { $regex: search, $options: "i" } }
       ];
     }
-    
+
     if (category) {
-      query['category.mainCategory'] = category;
+      query["category.mainCategory"] = category;
     }
-    
-    if (stockStatus === 'in_stock') {
+
+    if (stockStatus === "in_stock") {
       query.inStock = true;
-    } else if (stockStatus === 'out_of_stock') {
+    } else if (stockStatus === "out_of_stock") {
       query.inStock = false;
     }
 
     const products = await Product.find(query)
-      .limit(limit * 1)
-      .skip((page - 1) * limit)
+      .populate("category.offerCategory")       // ✅ populate main offer category
+      .populate("category.offerSubCategory")    // ✅ populate sub-offer category
+      .limit(Number(limit))
+      .skip((page - 1) * Number(limit))
       .sort({ createdAt: -1 });
 
     const total = await Product.countDocuments(query);
@@ -696,6 +1017,7 @@ app.get('/api/products', async (req, res) => {
   }
 });
 
+
 // Get single product
 app.get('/api/products/:id', async (req, res) => {
   try {
@@ -709,59 +1031,359 @@ app.get('/api/products/:id', async (req, res) => {
   }
 });
 
-// Create product
-app.post('/api/products', async (req, res) => {
+app.post('/api/products', uploadProduct.array('images', 10), async (req, res) => {
   try {
-    const productData = {
-      ...req.body,
-      discount: Math.round(((req.body.mrp - req.body.price) / req.body.mrp) * 100)
-    };
+    console.log('Received product creation request');
+    console.log('Body fields:', req.body);
+    console.log('Files:', req.files);
     
+    // Log all received fields
+    Object.keys(req.body).forEach(key => {
+      console.log(`${key}:`, req.body[key]);
+    });
+
+    const {
+      title,
+      subtitle,
+      sku,
+      price,
+      mrp,
+      description,
+      brand,
+      mainCategory,
+      subCategory,
+      offerCategory,
+      offerSubCategory,
+      weight,
+      dimensions,
+      shippingWeight,
+      stockQuantity,
+      inStock,
+      deliveryTime,
+      lowStockAlert,
+      isFreeShipping,
+      isTopSelling,
+      isTodaysDeal,
+      isHotDeal,
+      isFeatured,
+      metaTitle,
+      metaDescription,
+      status,
+      specifications
+    } = req.body;
+
+    // Check required fields
+    if (!title || !price || !mrp || !mainCategory) {
+      console.log('Missing required fields:', { title, price, mrp, mainCategory });
+      return res.status(400).json({ 
+        error: 'Missing required fields: title, price, mrp, mainCategory' 
+      });
+    }
+
+
+    // Check if SKU already exists
+    if (sku) {
+      const existingProduct = await Product.findOne({ sku });
+      if (existingProduct) {
+        return res.status(400).json({ error: 'SKU already exists' });
+      }
+    }
+
+    // Parse specifications if provided
+    let parsedSpecifications = [];
+    try {
+      if (specifications) {
+        parsedSpecifications = JSON.parse(specifications);
+      }
+    } catch (parseError) {
+      return res.status(400).json({ error: 'Invalid specifications format' });
+    }
+
+    // Handle images - use unified images array
+    const images = req.files ? req.files.map(file => file.path) : [];
+
+    // Prepare product data
+    const productData = {
+      title,
+      subtitle,
+      sku,
+      price: parseFloat(price),
+      mrp: parseFloat(mrp),
+      description,
+      brand,
+      category: {
+        mainCategory,
+        subCategory,
+        offerCategory: offerCategory || undefined,
+        offerSubCategory: offerSubCategory || undefined
+      },
+      weight,
+      dimensions,
+      shippingWeight: shippingWeight ? parseFloat(shippingWeight) : undefined,
+      deliveryTime,
+      stockQuantity,
+      lowStockAlert: parseInt(lowStockAlert) || 10,
+      stockQuantity: parseInt(stockQuantity) || 0,
+      inStock: inStock !== 'false',
+      isFreeShipping: isFreeShipping === 'true',
+      isTopSelling: isTopSelling === 'true',
+      isTodaysDeal: isTodaysDeal === 'true',
+      isHotDeal: isHotDeal === 'true',
+      isFeatured: isFeatured === 'true',
+      metaTitle,
+      metaDescription,
+      status: status || 'draft',
+      specifications: parsedSpecifications,
+      images // Use unified images array
+    };
+
+    // Create and save product
     const product = new Product(productData);
     await product.save();
-    res.status(201).json(product);
+
+    // Populate offer categories if they exist
+    if (offerCategory || offerSubCategory) {
+      await product.populate('category.offerCategory');
+      await product.populate('category.offerSubCategory');
+    }
+
+    res.status(201).json({
+      message: 'Product created successfully',
+      product
+    });
+
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    console.error('Error creating product:', error);
+    
+    // Clean up uploaded images if product creation fails
+    if (req.files && req.files.length > 0) {
+      try {
+        for (const file of req.files) {
+          await deleteFromCloudinary(file.path);
+        }
+      } catch (deleteError) {
+        console.error('Error cleaning up images:', deleteError);
+      }
+    }
+    
+    res.status(400).json({ 
+      error: error.message || 'Failed to create product' 
+    });
   }
 });
-
-// Update product
-app.put('/api/products/:id', async (req, res) => {
+app.post('/api/products/upload', uploadProduct.array('images', 10), async (req, res) => {
   try {
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: 'No images uploaded' });
+    }
+
+    const imageUrls = req.files.map(file => file.path);
+
+    res.json({
+      message: 'Images uploaded successfully',
+      images: imageUrls,
+      count: imageUrls.length
+    });
+  } catch (error) {
+    console.error('Error uploading images:', error);
+    res.status(500).json({ error: 'Failed to upload images' });
+  }
+});
+app.put('/api/products/:id', uploadProduct.array('images', 10), async (req, res) => {
+  try {
+    const existingProduct = await Product.findById(req.params.id);
+    if (!existingProduct) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    let images = existingProduct.images || [];
+
+    // Handle new images
+    if (req.files && req.files.length > 0) {
+      // Delete old images if replacing
+      if (req.body.replaceImages === 'true' && existingProduct.images.length > 0) {
+        for (const oldImage of existingProduct.images) {
+          await deleteFromCloudinary(oldImage);
+        }
+        images = [];
+      }
+      
+      // Add new images
+      const newImages = req.files.map(file => file.path);
+      images = [...images, ...newImages];
+    }
+
+    // Parse specifications if provided
+    let parsedSpecifications = existingProduct.specifications;
+    try {
+      if (req.body.specifications) {
+        parsedSpecifications = JSON.parse(req.body.specifications);
+      }
+    } catch (parseError) {
+      return res.status(400).json({ error: 'Invalid specifications format' });
+    }
+
     const productData = {
       ...req.body,
-      discount: Math.round(((req.body.mrp - req.body.price) / req.body.mrp) * 100),
+      price: req.body.price ? parseFloat(req.body.price) : existingProduct.price,
+      mrp: req.body.mrp ? parseFloat(req.body.mrp) : existingProduct.mrp,
+      stockQuantity: req.body.stockQuantity ? parseInt(req.body.stockQuantity) : existingProduct.stockQuantity,
+      lowStockAlert: req.body.lowStockAlert ? parseInt(req.body.lowStockAlert) : existingProduct.lowStockAlert,
+      shippingWeight: req.body.shippingWeight ? parseFloat(req.body.shippingWeight) : existingProduct.shippingWeight,
+      images: images,
+      specifications: parsedSpecifications,
       updatedAt: new Date()
     };
-    
+
+    // Handle category updates
+    if (req.body.mainCategory || req.body.subCategory || req.body.offerCategory || req.body.offerSubCategory) {
+      productData.category = {
+        mainCategory: req.body.mainCategory || existingProduct.category.mainCategory,
+        subCategory: req.body.subCategory || existingProduct.category.subCategory,
+        offerCategory: req.body.offerCategory || existingProduct.category.offerCategory,
+        offerSubCategory: req.body.offerSubCategory || existingProduct.category.offerSubCategory
+      };
+    }
+
     const product = await Product.findByIdAndUpdate(
       req.params.id,
       productData,
       { new: true, runValidators: true }
-    );
+    ).populate('category.offerCategory')
+     .populate('category.offerSubCategory');
     
-    if (!product) {
-      return res.status(404).json({ error: 'Product not found' });
+    res.json({
+      message: 'Product updated successfully',
+      product
+    });
+  } catch (error) {
+    console.error('Error updating product:', error);
+    
+    // Clean up uploaded images if update fails
+    if (req.files && req.files.length > 0) {
+      try {
+        for (const file of req.files) {
+          await deleteFromCloudinary(file.path);
+        }
+      } catch (deleteError) {
+        console.error('Error cleaning up images:', deleteError);
+      }
     }
     
-    res.json(product);
-  } catch (error) {
-    res.status(400).json({ error: error.message });
+    res.status(400).json({ 
+      error: error.message || 'Failed to update product' 
+    });
   }
 });
 
-// Delete product
+// Delete product with Cloudinary cleanup
 app.delete('/api/products/:id', async (req, res) => {
   try {
-    const product = await Product.findByIdAndDelete(req.params.id);
+    const product = await Product.findById(req.params.id);
     if (!product) {
       return res.status(404).json({ error: 'Product not found' });
     }
+
+    // Delete product image from Cloudinary
+    if (product.image) {
+      await deleteFromCloudinary(product.image);
+    }
+
+    await Product.findByIdAndDelete(req.params.id);
     res.json({ message: 'Product deleted successfully' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
+
+// ==================== BANNER ROUTES ====================
+
+// Create banner with Cloudinary upload
+app.post("/api/banner", uploadBanner.single("image"), async (req, res) => {
+  try {
+    const { name } = req.body;
+
+    if (!name || !req.file) {
+      return res.status(400).json({ error: "Name and image are required" });
+    }
+
+    const banner = await Banner.create({
+      name,
+      imageUrl: req.file.path, // Cloudinary secure URL
+    });
+
+    res.status(201).json(banner);
+  } catch (error) {
+    console.error("Banner Upload Error:", error);
+    res.status(500).json({ error: "Failed to upload banner" });
+  }
+});
+
+// Get all banners
+app.get("/api/banners", async (req, res) => {
+  try {
+    const banners = await Banner.find();
+    res.json(banners);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update banner with Cloudinary
+app.put("/api/banner/:id", uploadBanner.single("image"), async (req, res) => {
+  try {
+    const banner = await Banner.findById(req.params.id);
+    if (!banner) {
+      return res.status(404).json({ error: "Banner not found" });
+    }
+
+    let updateData = { name: req.body.name || banner.name };
+
+    // If new image uploaded → replace old image
+    if (req.file) {
+      // Delete old image from Cloudinary
+      if (banner.imageUrl) {
+        await deleteFromCloudinary(banner.imageUrl);
+      }
+
+      updateData.imageUrl = req.file.path; // Cloudinary secure URL
+    }
+
+    const updatedBanner = await Banner.findByIdAndUpdate(
+      req.params.id,
+      updateData,
+      { new: true }
+    );
+
+    res.json(updatedBanner);
+  } catch (error) {
+    console.error("Update Banner Error:", error);
+    res.status(500).json({ error: "Update failed" });
+  }
+});
+
+// Delete banner with Cloudinary cleanup
+app.delete("/api/banner/:id", async (req, res) => {
+  try {
+    const banner = await Banner.findById(req.params.id);
+    if (!banner) return res.status(404).json({ error: "Banner not found" });
+
+    // Delete image from Cloudinary
+    if (banner.imageUrl) {
+      await deleteFromCloudinary(banner.imageUrl);
+    }
+
+    await Banner.findByIdAndDelete(req.params.id);
+
+    res.json({ message: "Banner deleted successfully" });
+  } catch (error) {
+    console.error("Delete Banner Error:", error);
+    res.status(500).json({ error: "Delete failed" });
+  }
+});
+
+// ==================== CART ROUTES ====================
+
 app.post("/api/cart", async (req, res) => {
   try {
     const { userId, productId, title, price, image, quantity } = req.body;
@@ -812,6 +1434,7 @@ app.post("/api/cart", async (req, res) => {
     });
   }
 });
+
 app.get("/api/cart/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
@@ -839,6 +1462,7 @@ app.get("/api/cart/:userId", async (req, res) => {
     });
   }
 });
+
 app.delete("/api/cart/:userId/:productId", async (req, res) => {
   try {
     const { userId, productId } = req.params;
@@ -865,6 +1489,9 @@ app.delete("/api/cart/:userId/:productId", async (req, res) => {
     });
   }
 });
+
+// ==================== ADDRESS ROUTES ====================
+
 app.get('/api/address', authMiddleware, async (req, res) => {
   try {
     const addresses = await Address.find({ userId: req.user._id });
@@ -873,6 +1500,7 @@ app.get('/api/address', authMiddleware, async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 });
+
 app.post('/api/address', authMiddleware, async (req, res) => {
   const session = await mongoose.startSession();
   
@@ -950,6 +1578,7 @@ app.post('/api/address', authMiddleware, async (req, res) => {
     await session.endSession();
   }
 });
+
 app.put('/api/address/:id', authMiddleware, async (req, res) => {
   try {
     const { isDefault, ...addressData } = req.body;
@@ -978,6 +1607,7 @@ app.put('/api/address/:id', authMiddleware, async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 });
+
 app.delete('/api/address/:id', authMiddleware, async (req, res) => {
   try {
     const userId = req.user._id;
@@ -1003,22 +1633,23 @@ app.delete('/api/address/:id', authMiddleware, async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 });
-app.get('/api/check-pincode/:pincode', async (req, res) => {
-  try {
-    const { pincode } = req.params;
-    const deliverablePincodes = ['560001', '560002', '560003', '560004', '560005', '560006', '560007', '560008'];
-    const isAvailable = deliverablePincodes.includes(pincode);
-    
-    res.json({ deliverable: isAvailable });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-});
+
 app.post('/api/order', authMiddleware, async (req, res) => {
   const session = await mongoose.startSession();
 
   try {
     await session.startTransaction();
+
+    // Debug: Check authentication
+    console.log('User in order endpoint:', req.user);
+    
+    if (!req.user || !req.user._id) {
+      await session.abortTransaction();
+      return res.status(401).json({ 
+        success: false, 
+        message: "User authentication failed" 
+      });
+    }
 
     const userId = req.user._id;
     const {
@@ -1027,14 +1658,24 @@ app.post('/api/order', authMiddleware, async (req, res) => {
       paymentMethod,
       deliverySlot,
       coupon,
+      // Remove referralCoinsUsed from here - handle separately
       subtotal,
       discount,
       deliveryFee,
       total,
-      coinsEarned = Math.round(total * 0.05), // 5% of total as coins
+      coinsEarned = Math.round(total * 0.05),
     } = req.body;
 
-    if (!total || !address || !items || items.length === 0) {
+    // ✅ Enhanced validation
+    if (!total || total <= 0) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        success: false, 
+        message: "Invalid order total" 
+      });
+    }
+
+    if (!address || !items || items.length === 0) {
       await session.abortTransaction();
       return res.status(400).json({ 
         success: false, 
@@ -1042,17 +1683,69 @@ app.post('/api/order', authMiddleware, async (req, res) => {
       });
     }
 
-    // ✅ Generate unique orderId
-    const orderId = "ORD-" + uuidv4().split("-")[0].toUpperCase();
+    // ✅ Validate items structure
+    for (const item of items) {
+      if (!item.productId || !item.quantity || item.quantity <= 0) {
+        await session.abortTransaction();
+        return res.status(400).json({ 
+          success: false, 
+          message: "Invalid item data" 
+        });
+      }
+    }
 
-    const order = new Order({
-      orderId, // ✅ include this line
+    // ✅ Validate user exists
+    const userExists = await User.findById(userId).session(session);
+    if (!userExists) {
+      await session.abortTransaction();
+      return res.status(404).json({ 
+        success: false, 
+        message: "User not found" 
+      });
+    }
+
+    // ✅ Check COD limit
+    if (paymentMethod === 'cod' && total > 5000) {
+      await session.abortTransaction();
+      return res.status(400).json({ 
+        success: false, 
+        message: "Cash on Delivery not available for orders above ₹5000" 
+      });
+    }
+
+    // ✅ Generate unique orderId
+    const orderId = "ORD-" + Date.now() + "-" + Math.random().toString(36).substr(2, 9).toUpperCase();
+
+    // ✅ Create order object - set referralCoinsUsed to 0 initially
+    const orderData = {
+      orderId,
       userId,
-      items,
-      address,
+      items: items.map(item => ({
+        productId: item.productId,
+        quantity: item.quantity,
+        price: item.price,
+        title: item.title,
+        image: item.image
+      })),
+      address: {
+        label: address.label,
+        fullName: address.fullName,
+        mobile: address.mobile,
+        pincode: address.pincode,
+        address: address.address,
+        locality: address.locality,
+        city: address.city,
+        state: address.state,
+        landmark: address.landmark
+      },
       paymentMethod,
       deliverySlot,
-      coupon,
+      coupon: coupon ? {
+        code: coupon.code,
+        discount: coupon.discount,
+        description: coupon.description
+      } : undefined,
+      referralCoinsUsed: 0, // Start with 0, will be updated in separate endpoint
       subtotal,
       discount,
       deliveryFee,
@@ -1062,75 +1755,549 @@ app.post('/api/order', authMiddleware, async (req, res) => {
       status: "confirmed",
       paymentStatus: paymentMethod === 'cod' ? 'pending' : 'paid',
       orderStatus: "new"
-    });
+    };
 
+    const order = new Order(orderData);
     const savedOrder = await order.save({ session });
 
-    // ✅ Update user loyalty coins
-    await User.findByIdAndUpdate(
-      userId,
-      { $inc: { loyaltyCoins: savedOrder.coinsEarned } },
-      { session }
-    );
+    // ✅ Update user loyalty coins (only add earned coins, don't deduct used coins here)
+    if (coinsEarned > 0) {
+      await User.findByIdAndUpdate(
+        userId,
+        { $inc: { loyaltyCoins: coinsEarned } },
+        { session }
+      );
+    }
 
     // ✅ Referral completion logic
-    const user = await User.findById(userId).session(session);
-    if (user?.referredBy) {
-      const referral = await Referral.findOne({
-        referredUserId: userId,
-        status: "pending",
-      }).session(session);
+    if (userExists.referredBy) {
+      try {
+        const referral = await Referral.findOne({
+          referredUserId: userId,
+          status: "pending",
+        }).session(session);
 
-      if (referral) {
-        await referral.completeReferral(savedOrder.orderId);
+        if (referral) {
+          // Update referral status
+          referral.status = "completed";
+          referral.completedAt = new Date();
+          referral.orderId = savedOrder.orderId;
+          await referral.save({ session });
 
-        await User.findByIdAndUpdate(
-          referral.referrerId,
-          { $inc: { loyaltyCoins: 50 } },
-          { session }
-        );
+          // Award bonus coins to both users
+          const bonusCoins = 50;
 
-        await User.findByIdAndUpdate(
-          userId,
-          { $inc: { loyaltyCoins: 50 } },
-          { session }
-        );
+          await User.findByIdAndUpdate(
+            referral.referrerId,
+            { 
+              $inc: { 
+                loyaltyCoins: bonusCoins
+              } 
+            },
+            { session }
+          );
+
+          await User.findByIdAndUpdate(
+            userId,
+            { $inc: { loyaltyCoins: bonusCoins } },
+            { session }
+          );
+
+          console.log(`Referral completed: ${referral._id}, bonus coins awarded to both users`);
+        }
+      } catch (referralError) {
+        console.error("Referral processing error:", referralError);
+        // Don't fail the entire order if referral processing fails
       }
     }
 
     // ✅ Clear user's cart
-    await Cart.deleteMany({ userId }).session(session);
+    const cartDeleteResult = await Cart.deleteMany({ userId }).session(session);
+    console.log(`Cleared cart for user ${userId}, deleted ${cartDeleteResult.deletedCount} items`);
+
+    // ✅ Update product stock (if you have inventory management)
+    try {
+      for (const item of items) {
+        const productUpdate = await Product.findByIdAndUpdate(
+          item.productId,
+          { $inc: { stock: -item.quantity } },
+          { session, new: true }
+        );
+        if (productUpdate) {
+          console.log(`Updated stock for product ${item.productId}, new stock: ${productUpdate.stock}`);
+        }
+      }
+    } catch (stockError) {
+      console.error("Stock update error:", stockError);
+      // Don't fail the entire order if stock update fails
+    }
 
     await session.commitTransaction();
+    console.log(`Order ${savedOrder.orderId} placed successfully for user ${userId}`);
 
+    // ✅ Send success response
     res.status(201).json({
       success: true,
       message: "Order placed successfully.",
       orderId: savedOrder.orderId,
       total: savedOrder.total,
       coinsEarned: savedOrder.coinsEarned,
-      order: savedOrder
+      referralCoinsUsed: 0, // Will be updated in separate call
+      order: {
+        _id: savedOrder._id,
+        orderId: savedOrder.orderId,
+        items: savedOrder.items,
+        address: savedOrder.address,
+        paymentMethod: savedOrder.paymentMethod,
+        deliverySlot: savedOrder.deliverySlot,
+        subtotal: savedOrder.subtotal,
+        discount: savedOrder.discount,
+        deliveryFee: savedOrder.deliveryFee,
+        total: savedOrder.total,
+        coinsEarned: savedOrder.coinsEarned,
+        status: savedOrder.status,
+        paymentStatus: savedOrder.paymentStatus,
+        createdAt: savedOrder.createdAt
+      }
     });
+
   } catch (error) {
     await session.abortTransaction();
     console.error("Order placement error:", error);
-    res.status(500).json({
+    
+    let errorMessage = "Internal server error during order processing.";
+    let statusCode = 500;
+
+    if (error.name === 'ValidationError') {
+      errorMessage = "Invalid order data provided.";
+      statusCode = 400;
+    } else if (error.name === 'CastError') {
+      errorMessage = "Invalid data format.";
+      statusCode = 400;
+    } else if (error.code === 11000) {
+      errorMessage = "Order ID already exists, please try again.";
+      statusCode = 400;
+    }
+
+    res.status(statusCode).json({
       success: false,
-      message: "Internal server error during order processing.",
+      message: errorMessage,
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   } finally {
     await session.endSession();
   }
 });
+app.get('/api/referrals/user', authMiddleware, async (req, res) => {
+  try {
+    // Debug: Check what's in req.user
+    console.log('User in referral endpoint:', req.user);
+    
+    // Ensure req.user._id exists and is valid
+    if (!req.user || !req.user._id) {
+      return res.status(401).json({
+        success: false,
+        message: "User not authenticated properly"
+      });
+    }
 
-// Get user orders
+    const userId = req.user._id;
+
+    // Get user's referral data
+    const user = await User.findById(userId).select('loyaltyCoins referredBy referralCode');
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found"
+      });
+    }
+
+    // Get referrals made by this user
+    const referrals = await Referral.find({ referrerId: userId });
+    
+    // Calculate stats
+    const completedReferrals = referrals.filter(ref => ref.status === 'completed').length;
+    const totalEarned = completedReferrals * 50; // 50 coins per completed referral
+
+    res.json({
+      success: true,
+      user: {
+        loyaltyCoins: user.loyaltyCoins || 0,
+        referralCode: user.referralCode,
+        referredBy: user.referredBy
+      },
+      referrals: referrals,
+      completed: completedReferrals,
+      totalEarned: totalEarned
+    });
+
+  } catch (error) {
+    console.error("Referral data error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch referral data",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+// Enhanced orders endpoint with complete details
 app.get('/api/orders', authMiddleware, async (req, res) => {
   try {
     const userId = req.user._id;
-    const orders = await Order.find({ userId }).sort({ createdAt: -1 });
-    res.json({ success: true, orders });
+    
+    const orders = await Order.find({ userId })
+      .populate('userId', 'name email phone loyaltyCoins referralCode')
+      .populate('items.productId', 'title subtitle image price mrp discount category brand inStock stockQuantity')
+      .populate('statusHistory.updatedBy', 'name email')
+      .sort({ createdAt: -1 });
+
+    // Format the response with complete details
+    const formattedOrders = orders.map(order => ({
+      _id: order._id,
+      orderId: order.orderId,
+      user: {
+        _id: order.userId._id,
+        name: order.userId.name,
+        email: order.userId.email,
+        phone: order.userId.phone,
+        loyaltyCoins: order.userId.loyaltyCoins,
+        referralCode: order.userId.referralCode
+      },
+      items: order.items.map(item => ({
+        _id: item._id,
+        productId: {
+          _id: item.productId?._id,
+          title: item.productId?.title,
+          subtitle: item.productId?.subtitle,
+          image: item.productId?.image,
+          price: item.productId?.price,
+          mrp: item.productId?.mrp,
+          discount: item.productId?.discount,
+          category: item.productId?.category,
+          brand: item.productId?.brand,
+          inStock: item.productId?.inStock,
+          stockQuantity: item.productId?.stockQuantity
+        },
+        title: item.title || item.productId?.title,
+        image: item.image || item.productId?.image,
+        quantity: item.quantity,
+        price: item.price,
+        itemTotal: item.price * item.quantity
+      })),
+      address: {
+        // Handle both object and referenced address
+        ...(order.address._id ? {
+          _id: order.address._id,
+          label: order.address.label,
+          fullName: order.address.fullName,
+          mobile: order.address.mobile,
+          pincode: order.address.pincode,
+          address: order.address.address,
+          locality: order.address.locality,
+          city: order.address.city,
+          state: order.address.state,
+          landmark: order.address.landmark,
+          isDefault: order.address.isDefault
+        } : order.address)
+      },
+      paymentMethod: order.paymentMethod,
+      deliverySlot: order.deliverySlot,
+      coupon: order.coupon,
+      referralCoinsUsed: order.referralCoinsUsed,
+      pricing: {
+        subtotal: order.subtotal,
+        discount: order.discount,
+        deliveryFee: order.deliveryFee,
+        referralDiscount: order.referralCoinsUsed,
+        total: order.total,
+        totalAmount: order.totalAmount
+      },
+      status: {
+        orderStatus: order.orderStatus,
+        paymentStatus: order.paymentStatus,
+        legacyStatus: order.status // Keeping for backward compatibility
+      },
+      rewards: {
+        coinsEarned: order.coinsEarned,
+        referralCoinsUsed: order.referralCoinsUsed
+      },
+      statusHistory: order.statusHistory.map(history => ({
+        status: history.status,
+        timestamp: history.timestamp,
+        notes: history.notes,
+        updatedBy: history.updatedBy ? {
+          _id: history.updatedBy._id,
+          name: history.updatedBy.name,
+          email: history.updatedBy.email
+        } : null
+      })),
+      timestamps: {
+        createdAt: order.createdAt,
+        updatedAt: order.updatedAt
+      },
+      summary: {
+        totalItems: order.items.reduce((sum, item) => sum + item.quantity, 0),
+        itemCount: order.items.length,
+        deliveryInfo: order.deliverySlot ? `Slot: ${order.deliverySlot}` : 'Standard Delivery'
+      }
+    }));
+
+    res.json({ 
+      success: true, 
+      orders: formattedOrders,
+      meta: {
+        totalOrders: orders.length,
+        totalAmount: orders.reduce((sum, order) => sum + (order.totalAmount || 0), 0),
+        statusBreakdown: {
+          new: orders.filter(o => o.orderStatus === 'new').length,
+          processing: orders.filter(o => o.orderStatus === 'processing').length,
+          shipped: orders.filter(o => o.orderStatus === 'shipped').length,
+          delivered: orders.filter(o => o.orderStatus === 'delivered').length,
+          cancelled: orders.filter(o => o.orderStatus === 'cancelled').length
+        }
+      }
+    });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    console.error('Orders fetch error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch orders',
+      error: error.message 
+    });
+  }
+});
+
+// Enhanced single order endpoint
+app.get('/api/orders/:id', authMiddleware, async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    const userId = req.user._id;
+
+    const order = await Order.findOne({ _id: orderId, userId })
+      .populate('userId', 'name email phone loyaltyCoins referralCode createdAt')
+      .populate('items.productId', 'title subtitle image price mrp discount category brand inStock stockQuantity description features')
+      .populate('statusHistory.updatedBy', 'name email')
+      .populate('address'); // If address is referenced
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+
+    // Format the complete order response
+    const formattedOrder = {
+      _id: order._id,
+      orderId: order.orderId,
+      user: {
+        _id: order.userId._id,
+        name: order.userId.name,
+        email: order.userId.email,
+        phone: order.userId.phone,
+        loyaltyCoins: order.userId.loyaltyCoins,
+        referralCode: order.userId.referralCode,
+        memberSince: order.userId.createdAt
+      },
+      items: order.items.map(item => ({
+        _id: item._id,
+        product: {
+          _id: item.productId?._id,
+          title: item.productId?.title,
+          subtitle: item.productId?.subtitle,
+          image: item.productId?.image,
+          price: item.productId?.price,
+          mrp: item.productId?.mrp,
+          discount: item.productId?.discount,
+          category: item.productId?.category,
+          brand: item.productId?.brand,
+          inStock: item.productId?.inStock,
+          stockQuantity: item.productId?.stockQuantity,
+          description: item.productId?.description,
+          features: item.productId?.features
+        },
+        orderedItem: {
+          title: item.title || item.productId?.title,
+          image: item.image || item.productId?.image,
+          quantity: item.quantity,
+          price: item.price,
+          itemTotal: item.price * item.quantity
+        },
+        currentStatus: {
+          inStock: item.productId?.inStock,
+          stockQuantity: item.productId?.stockQuantity,
+          priceChanged: item.price !== item.productId?.price
+        }
+      })),
+      delivery: {
+        address: {
+          // Handle both embedded and referenced address
+          ...(order.address._id ? {
+            _id: order.address._id,
+            label: order.address.label,
+            fullName: order.address.fullName,
+            mobile: order.address.mobile,
+            pincode: order.address.pincode,
+            address: order.address.address,
+            locality: order.address.locality,
+            city: order.address.city,
+            state: order.address.state,
+            landmark: order.address.landmark,
+            isDefault: order.address.isDefault,
+            formattedAddress: `${order.address.address}, ${order.address.locality}, ${order.address.city}, ${order.address.state} - ${order.address.pincode}`
+          } : {
+            ...order.address,
+            formattedAddress: `${order.address.address}, ${order.address.locality || ''}, ${order.address.city}, ${order.address.state} - ${order.address.pincode}`
+          })
+        },
+        slot: order.deliverySlot,
+        status: order.orderStatus
+      },
+      payment: {
+        method: order.paymentMethod,
+        status: order.paymentStatus,
+        details: {
+          subtotal: order.subtotal,
+          discount: order.discount,
+          deliveryFee: order.deliveryFee,
+          referralDiscount: order.referralCoinsUsed,
+          total: order.total,
+          totalAmount: order.totalAmount
+        }
+      },
+      promotions: {
+        coupon: order.coupon,
+        referralCoinsUsed: order.referralCoinsUsed
+      },
+      status: {
+        current: order.orderStatus,
+        payment: order.paymentStatus,
+        legacy: order.status,
+        history: order.statusHistory.map(history => ({
+          status: history.status,
+          timestamp: history.timestamp,
+          notes: history.notes,
+          updatedBy: history.updatedBy ? {
+            _id: history.updatedBy._id,
+            name: history.updatedBy.name,
+            email: history.updatedBy.email
+          } : null,
+          formattedDate: new Date(history.timestamp).toLocaleString()
+        }))
+      },
+      rewards: {
+        coinsEarned: order.coinsEarned,
+        referralCoinsUsed: order.referralCoinsUsed,
+        netCoins: order.coinsEarned - order.referralCoinsUsed
+      },
+      timestamps: {
+        createdAt: order.createdAt,
+        updatedAt: order.updatedAt,
+        formatted: {
+          created: new Date(order.createdAt).toLocaleString(),
+          updated: new Date(order.updatedAt).toLocaleString()
+        }
+      },
+      summary: {
+        totalItems: order.items.reduce((sum, item) => sum + item.quantity, 0),
+        uniqueProducts: order.items.length,
+        deliveryInfo: order.deliverySlot || 'Standard Delivery',
+        canReorder: order.orderStatus === 'delivered',
+        canCancel: ['new', 'confirmed'].includes(order.orderStatus)
+      }
+    };
+
+    res.json({
+      success: true,
+      order: formattedOrder
+    });
+
+  } catch (error) {
+    console.error('Order details fetch error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch order details',
+      error: error.message
+    });
+  }
+});
+
+// Additional endpoint for order statistics
+app.get('/api/orders/stats/summary', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    const stats = await Order.aggregate([
+      { $match: { userId: mongoose.Types.ObjectId(userId) } },
+      {
+        $group: {
+          _id: null,
+          totalOrders: { $sum: 1 },
+          totalSpent: { $sum: '$totalAmount' },
+          deliveredOrders: {
+            $sum: { $cond: [{ $eq: ['$orderStatus', 'delivered'] }, 1, 0] }
+          },
+          pendingOrders: {
+            $sum: {
+              $cond: [
+                { $in: ['$orderStatus', ['new', 'confirmed', 'processing', 'shipped']] },
+                1, 0
+              ]
+            }
+          },
+          cancelledOrders: {
+            $sum: { $cond: [{ $eq: ['$orderStatus', 'cancelled'] }, 1, 0] }
+          },
+          totalCoinsEarned: { $sum: '$coinsEarned' },
+          averageOrderValue: { $avg: '$totalAmount' }
+        }
+      }
+    ]);
+
+    const statusBreakdown = await Order.aggregate([
+      { $match: { userId: mongoose.Types.ObjectId(userId) } },
+      {
+        $group: {
+          _id: '$orderStatus',
+          count: { $sum: 1 },
+          totalAmount: { $sum: '$totalAmount' }
+        }
+      }
+    ]);
+
+    const recentOrders = await Order.find({ userId })
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .select('orderId totalAmount orderStatus createdAt');
+
+    res.json({
+      success: true,
+      stats: stats[0] || {
+        totalOrders: 0,
+        totalSpent: 0,
+        deliveredOrders: 0,
+        pendingOrders: 0,
+        cancelledOrders: 0,
+        totalCoinsEarned: 0,
+        averageOrderValue: 0
+      },
+      statusBreakdown,
+      recentOrders: recentOrders.map(order => ({
+        orderId: order.orderId,
+        totalAmount: order.totalAmount,
+        orderStatus: order.orderStatus,
+        createdAt: order.createdAt
+      }))
+    });
+
+  } catch (error) {
+    console.error('Order stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch order statistics',
+      error: error.message
+    });
   }
 });
 
@@ -1187,8 +2354,6 @@ app.get("/api/referrals/:userId", async (req, res) => {
     res.status(500).json({ message: "Failed to fetch referral data", error: error.message });
   }
 });
-
-// Use loyalty coins
 app.post('/api/referrals/use-coins', authMiddleware, async (req, res) => {
   const session = await mongoose.startSession();
   
@@ -1197,21 +2362,30 @@ app.post('/api/referrals/use-coins', authMiddleware, async (req, res) => {
 
     const userId = req.user._id;
     const { coinsToUse, orderId } = req.body;
-
+    
     if (!coinsToUse || coinsToUse <= 0) {
       await session.abortTransaction();
       return res.status(400).json({
         success: false,
-        message: 'Invalid coins amount'
+        message: "Invalid coins amount"
       });
     }
 
+    if (!orderId) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: "Order ID is required"
+      });
+    }
+
+    // Check if user has enough coins
     const user = await User.findById(userId).session(session);
     if (!user) {
       await session.abortTransaction();
       return res.status(404).json({
         success: false,
-        message: 'User not found'
+        message: "User not found"
       });
     }
 
@@ -1219,49 +2393,69 @@ app.post('/api/referrals/use-coins', authMiddleware, async (req, res) => {
       await session.abortTransaction();
       return res.status(400).json({
         success: false,
-        message: 'Insufficient coins balance'
+        message: "Insufficient loyalty coins"
       });
     }
 
+    // Check if order exists and belongs to user
+    const order = await Order.findOne({ 
+      orderId: orderId,
+      userId: userId 
+    }).session(session);
+
+    if (!order) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message: "Order not found"
+      });
+    }
+
+    // Check if coins have already been used for this order
+    if (order.referralCoinsUsed > 0) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: "Coins have already been used for this order"
+      });
+    }
+
+    // Calculate discount (10 coins = ₹1)
+    const coinsDiscount = coinsToUse / 10;
+
+    // Update order with used coins
+    order.referralCoinsUsed = coinsToUse;
+    order.discount = (order.discount || 0) + coinsDiscount;
+    order.total = Math.max(0, order.total - coinsDiscount);
+    await order.save({ session });
+
+    // Deduct coins from user
     user.loyaltyCoins -= coinsToUse;
     await user.save({ session });
 
-    const referralUsage = new ReferralUsage({
-      userId: user._id,
-      coinsUsed: coinsToUse,
-      discountAmount: coinsToUse / 10,
-      orderId: orderId || null,
-      previousBalance: user.loyaltyCoins + coinsToUse,
-      newBalance: user.loyaltyCoins
-    });
-
-    await referralUsage.save({ session });
     await session.commitTransaction();
 
     res.json({
       success: true,
-      message: `Successfully used ${coinsToUse} coins`,
-      newBalance: user.loyaltyCoins,
-      discountAmount: coinsToUse / 10,
-      usageRecord: {
-        id: referralUsage._id,
-        coinsUsed: coinsToUse,
-        discountAmount: coinsToUse / 10
-      }
+      message: `Successfully used ${coinsToUse} coins for order ${orderId}`,
+      coinsUsed: coinsToUse,
+      discountApplied: coinsDiscount,
+      remainingCoins: user.loyaltyCoins,
+      newOrderTotal: order.total
     });
 
   } catch (error) {
     await session.abortTransaction();
-    console.error('Use coins error:', error);
+    console.error("Use coins error:", error);
     res.status(500).json({
       success: false,
-      message: 'Failed to use coins'
+      message: "Failed to use referral coins",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   } finally {
     await session.endSession();
   }
 });
-
 // ==================== DASHBOARD ROUTES ====================
 
 app.get('/api/dashboard/stats', async (req, res) => {
@@ -1377,6 +2571,7 @@ app.get('/api/admin/orders', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
 // ==================== ORDER DETAILS ROUTES ====================
 
 // GET single order details
@@ -1722,6 +2917,7 @@ app.get('/api/orders/:id/status-history', authMiddleware, async (req, res) => {
     });
   }
 });
+
 app.put('/api/admin/orders/:id/status', async (req, res) => {
   try {
     const { status } = req.body;
@@ -1836,6 +3032,7 @@ app.get('/api/reports/sales', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
 // ==================== GET ORDERS BY USER ID ====================
 
 // GET orders for specific user by user ID (Admin or the user themselves)
@@ -2125,24 +3322,880 @@ app.get('/api/user/orders/all', async (req, res) => {
     });
   }
 });
-// ==================== HEALTH CHECK ====================
+// ==================== ENHANCED ORDER ROUTES ====================
 
+// Get orders with advanced filtering (Admin)
+app.get('/api/admin/orders', async (req, res) => {
+  try {
+    const { 
+      page = 1, 
+      limit = 10, 
+      orderStatus, 
+      paymentStatus,
+      search,
+      startDate,
+      endDate 
+    } = req.query;
+    
+    let query = {};
+    
+    // Status filters
+    if (orderStatus) {
+      query.orderStatus = orderStatus;
+    }
+    
+    if (paymentStatus) {
+      query.paymentStatus = paymentStatus;
+    }
+
+    // Date range filter
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) query.createdAt.$lte = new Date(endDate);
+    }
+
+    // Search filter (order ID or customer name/email)
+    if (search) {
+      const searchRegex = new RegExp(search, 'i');
+      query.$or = [
+        { orderId: searchRegex },
+        { 'userId.name': searchRegex },
+        { 'userId.email': searchRegex }
+      ];
+    }
+
+    const orders = await Order.find(query)
+      .populate('userId', 'name email')
+      .populate('items.productId', 'title image price')
+      .limit(limit * 1)
+      .skip((page - 1) * limit)
+      .sort({ createdAt: -1 });
+
+    const total = await Order.countDocuments(query);
+
+    res.json({
+      success: true,
+      orders,
+      totalPages: Math.ceil(total / limit),
+      currentPage: parseInt(page),
+      total
+    });
+  } catch (error) {
+    console.error('Admin orders fetch error:', error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message 
+    });
+  }
+});
+
+// Get single order details (Admin)
+app.get('/api/admin/orders/:id', async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id)
+      .populate('userId', 'name email phone')
+      .populate('items.productId', 'title subtitle image price category')
+      .populate('address');
+
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      order
+    });
+  } catch (error) {
+    console.error('Order fetch error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Update order status (Admin)
+app.put('/api/admin/orders/:id/status', async (req, res) => {
+  try {
+    const { status, notes } = req.body;
+    const orderId = req.params.id;
+
+    // Validate status
+    const validStatuses = ['new', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid order status'
+      });
+    }
+
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+
+    // Update order status
+    const previousStatus = order.orderStatus;
+    order.orderStatus = status;
+    order.status = status; // Update legacy field
+    order.updatedAt = new Date();
+
+    // Add status history
+    if (!order.statusHistory) {
+      order.statusHistory = [];
+    }
+    
+    order.statusHistory.push({
+      status: status,
+      timestamp: new Date(),
+      notes: notes || `Status changed from ${previousStatus} to ${status}`
+    });
+
+    await order.save();
+
+    // Populate the updated order for response
+    const updatedOrder = await Order.findById(orderId)
+      .populate('userId', 'name email')
+      .populate('items.productId', 'title image price');
+
+    res.json({
+      success: true,
+      message: `Order status updated to ${status}`,
+      order: updatedOrder
+    });
+
+  } catch (error) {
+    console.error('Order status update error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Bulk status update
+app.put('/api/admin/orders/bulk/status', async (req, res) => {
+  try {
+    const { orderIds, status, notes } = req.body;
+
+    if (!orderIds || !orderIds.length || !status) {
+      return res.status(400).json({
+        success: false,
+        message: 'Order IDs and status are required'
+      });
+    }
+
+    const result = await Order.updateMany(
+      { _id: { $in: orderIds } },
+      { 
+        $set: { 
+          orderStatus: status,
+          status: status,
+          updatedAt: new Date()
+        },
+        $push: {
+          statusHistory: {
+            status: status,
+            timestamp: new Date(),
+            notes: notes || `Bulk status update to ${status}`
+          }
+        }
+      }
+    );
+
+    res.json({
+      success: true,
+      message: `Updated ${result.modifiedCount} orders to ${status}`,
+      modifiedCount: result.modifiedCount
+    });
+
+  } catch (error) {
+    console.error('Bulk status update error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Get order statistics
+app.get('/api/admin/orders/stats/overview', async (req, res) => {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    // Today's orders and revenue
+    const todayStats = await Order.aggregate([
+      {
+        $match: {
+          createdAt: { $gte: today, $lt: tomorrow }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          count: { $sum: 1 },
+          revenue: { $sum: '$totalAmount' }
+        }
+      }
+    ]);
+
+    // Order status counts
+    const statusCounts = await Order.aggregate([
+      {
+        $group: {
+          _id: '$orderStatus',
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // Payment status counts
+    const paymentCounts = await Order.aggregate([
+      {
+        $group: {
+          _id: '$paymentStatus',
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // Recent orders (last 7 days)
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    const recentOrders = await Order.countDocuments({
+      createdAt: { $gte: sevenDaysAgo }
+    });
+
+    res.json({
+      success: true,
+      stats: {
+        today: {
+          orders: todayStats[0]?.count || 0,
+          revenue: todayStats[0]?.revenue || 0
+        },
+        statusCounts: statusCounts.reduce((acc, curr) => {
+          acc[curr._id] = curr.count;
+          return acc;
+        }, {}),
+        paymentCounts: paymentCounts.reduce((acc, curr) => {
+          acc[curr._id] = curr.count;
+          return acc;
+        }, {}),
+        recentOrders
+      }
+    });
+
+  } catch (error) {
+    console.error('Order stats error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ==================== ADMIN LOYALTY COINS MANAGEMENT ====================
+
+// Add loyalty coins to user
+app.post('/api/admin/users/:userId/loyalty-coins', authMiddleware, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { coins, reason, orderId } = req.body;
+
+    // Validate input
+    if (!coins || coins <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid coins amount is required'
+      });
+    }
+
+    if (!reason) {
+      return res.status(400).json({
+        success: false,
+        message: 'Reason for adding coins is required'
+      });
+    }
+
+    // Check if user exists
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Update user's loyalty coins
+    const previousBalance = user.loyaltyCoins;
+    user.loyaltyCoins += parseInt(coins);
+    await user.save();
+
+    // Create loyalty coins transaction record
+    const loyaltyTransaction = new LoyaltyTransaction({
+      userId: user._id,
+      type: 'admin_added',
+      coins: parseInt(coins),
+      previousBalance,
+      newBalance: user.loyaltyCoins,
+      reason: reason,
+      orderId: orderId || null,
+      adminId: req.user._id,
+      status: 'completed'
+    });
+
+    await loyaltyTransaction.save();
+
+    res.json({
+      success: true,
+      message: `Successfully added ${coins} loyalty coins to user`,
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        loyaltyCoins: user.loyaltyCoins
+      },
+      transaction: {
+        id: loyaltyTransaction._id,
+        coins: coins,
+        reason: reason,
+        timestamp: loyaltyTransaction.createdAt
+      }
+    });
+
+  } catch (error) {
+    console.error('Add loyalty coins error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to add loyalty coins',
+      error: error.message
+    });
+  }
+});
+
+// Remove loyalty coins from user
+app.post('/api/admin/users/:userId/loyalty-coins/deduct', authMiddleware, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { coins, reason } = req.body;
+
+    // Validate input
+    if (!coins || coins <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid coins amount is required'
+      });
+    }
+
+    if (!reason) {
+      return res.status(400).json({
+        success: false,
+        message: 'Reason for deducting coins is required'
+      });
+    }
+
+    // Check if user exists
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Check if user has sufficient coins
+    if (user.loyaltyCoins < coins) {
+      return res.status(400).json({
+        success: false,
+        message: `User has insufficient coins. Current balance: ${user.loyaltyCoins}`
+      });
+    }
+
+    // Update user's loyalty coins
+    const previousBalance = user.loyaltyCoins;
+    user.loyaltyCoins -= parseInt(coins);
+    await user.save();
+
+    // Create loyalty coins transaction record
+    const loyaltyTransaction = new LoyaltyTransaction({
+      userId: user._id,
+      type: 'admin_deducted',
+      coins: parseInt(coins),
+      previousBalance,
+      newBalance: user.loyaltyCoins,
+      reason: reason,
+      adminId: req.user._id,
+      status: 'completed'
+    });
+
+    await loyaltyTransaction.save();
+
+    res.json({
+      success: true,
+      message: `Successfully deducted ${coins} loyalty coins from user`,
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        loyaltyCoins: user.loyaltyCoins
+      },
+      transaction: {
+        id: loyaltyTransaction._id,
+        coins: coins,
+        reason: reason,
+        timestamp: loyaltyTransaction.createdAt
+      }
+    });
+
+  } catch (error) {
+    console.error('Deduct loyalty coins error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to deduct loyalty coins',
+      error: error.message
+    });
+  }
+});
+
+// Get user loyalty coins transactions
+app.get('/api/admin/users/:userId/loyalty-transactions', authMiddleware, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { page = 1, limit = 10, type } = req.query;
+
+    let query = { userId };
+    if (type) {
+      query.type = type;
+    }
+
+    const transactions = await LoyaltyTransaction.find(query)
+      .populate('adminId', 'name email')
+      .populate('orderId', 'orderId totalAmount')
+      .sort({ createdAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+
+    const total = await LoyaltyTransaction.countDocuments(query);
+
+    res.json({
+      success: true,
+      transactions,
+      totalPages: Math.ceil(total / limit),
+      currentPage: parseInt(page),
+      total
+    });
+
+  } catch (error) {
+    console.error('Get loyalty transactions error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch loyalty transactions',
+      error: error.message
+    });
+  }
+});
+
+// Get user loyalty coins summary
+app.get('/api/admin/users/:userId/loyalty-summary', authMiddleware, async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const user = await User.findById(userId).select('name email loyaltyCoins referralCode createdAt');
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Get transaction statistics
+    const stats = await LoyaltyTransaction.aggregate([
+      { $match: { userId: user._id } },
+      {
+        $group: {
+          _id: '$type',
+          totalCoins: { $sum: '$coins' },
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // Get recent orders with coins earned
+    const recentOrders = await Order.find({ userId: user._id })
+      .select('orderId totalAmount coinsEarned createdAt')
+      .sort({ createdAt: -1 })
+      .limit(5);
+
+    const summary = {
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        loyaltyCoins: user.loyaltyCoins,
+        referralCode: user.referralCode,
+        memberSince: user.createdAt
+      },
+      statistics: stats.reduce((acc, curr) => {
+        acc[curr._id] = {
+          totalCoins: curr.totalCoins,
+          transactionCount: curr.count
+        };
+        return acc;
+      }, {}),
+      recentOrders
+    };
+
+    res.json({
+      success: true,
+      summary
+    });
+
+  } catch (error) {
+    console.error('Get loyalty summary error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch loyalty summary',
+      error: error.message
+    });
+  }
+});
+app.get("/api/zones", async (req, res) => {
+  const zones = await Zone.find();
+  res.json(zones);
+});
+
+// CREATE zone
+app.post("/api/zones", async (req, res) => {
+  const zone = await Zone.create(req.body);
+  res.json(zone);
+});
+
+// UPDATE zone
+app.put("/api/zones/:id", async (req, res) => {
+  const updated = await Zone.findByIdAndUpdate(req.params.id, req.body, {
+    new: true,
+  });
+  res.json(updated);
+});
+
+// DELETE zone
+app.delete("/api/zones/:id", async (req, res) => {
+  await Zone.findByIdAndDelete(req.params.id);
+  res.json({ success: true });
+});
+
+app.post('/api/offers/categories', async (req, res) => {
+  try {
+    const category = new OfferCategory(req.body);
+    await category.save();
+    res.status(201).json(category);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.get('/api/offers/categories', async (req, res) => {
+  try {
+    const categories = await OfferCategory.find({ isActive: true }).sort({ displayOrder: 1 });
+    res.json(categories);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/offers/categories/:id', async (req, res) => {
+  try {
+    const category = await OfferCategory.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true }
+    );
+    res.json(category);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.delete('/api/offers/categories/:id', async (req, res) => {
+  try {
+    await OfferCategory.findByIdAndUpdate(req.params.id, { isActive: false });
+    res.json({ message: 'Category deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// SubCategory Routes
+app.post('/api/offers/subcategories', async (req, res) => {
+  try {
+    const subcategory = new OfferSubCategory(req.body);
+    await subcategory.save();
+    await subcategory.populate('category');
+    res.status(201).json(subcategory);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.get('/api/offers/subcategories/:categoryId', async (req, res) => {
+  try {
+    const subcategories = await OfferSubCategory.find({
+      category: req.params.categoryId,
+      isActive: true
+    }).populate('category');
+    res.json(subcategories);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/offers/subcategories/:id', async (req, res) => {
+  try {
+    const subcategory = await OfferSubCategory.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true }
+    ).populate('category');
+    res.json(subcategory);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.delete('/api/offers/subcategories/:id', async (req, res) => {
+  try {
+    await OfferSubCategory.findByIdAndUpdate(req.params.id, { isActive: false });
+    res.json({ message: 'Subcategory deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Offer Routes
+app.post('/api/offers', async (req, res) => {
+  try {
+    const offer = new Offer(req.body);
+    await offer.save();
+    await offer.populate('category');
+    await offer.populate('subcategory');
+    res.status(201).json(offer);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.get('/api/offers', async (req, res) => {
+  try {
+    const { category, subcategory, active } = req.query;
+    let filter = { isActive: true };
+    
+    if (category) filter.category = category;
+    if (subcategory) filter.subcategory = subcategory;
+    if (active !== undefined) filter.isActive = active === 'true';
+    
+    const offers = await Offer.find(filter)
+      .populate('category')
+      .populate('subcategory')
+      .sort({ createdAt: -1 });
+    
+    res.json(offers);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/offers/:id', async (req, res) => {
+  try {
+    const offer = await Offer.findById(req.params.id)
+      .populate('category')
+      .populate('subcategory');
+    res.json(offer);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/offers/:id', async (req, res) => {
+  try {
+    const offer = await Offer.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true }
+    )
+      .populate('category')
+      .populate('subcategory');
+    res.json(offer);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.delete('/api/offers/:id', async (req, res) => {
+  try {
+    await Offer.findByIdAndUpdate(req.params.id, { isActive: false });
+    res.json({ message: 'Offer deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Dashboard Stats
+app.get('/api/offers/stats', async (req, res) => {
+  try {
+    const totalOffers = await Offer.countDocuments({ isActive: true });
+    const totalCategories = await OfferCategory.countDocuments({ isActive: true });
+    const totalSubCategories = await OfferSubCategory.countDocuments({ isActive: true });
+    const activeOffers = await Offer.countDocuments({ 
+      isActive: true,
+      endDate: { $gte: new Date() }
+    });
+    
+    res.json({
+      totalOffers,
+      totalCategories,
+      totalSubCategories,
+      activeOffers
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+app.get('/api/check-pincode/:pincode', async (req, res) => {
+    try {
+        const { pincode } = req.params;
+        
+        // Input Validation
+        if (!/^\d{6}$/.test(pincode)) {
+            return res.status(400).json({ deliverable: false, message: 'Invalid 6-digit pincode format.' });
+        }
+
+        // Check if the pincode exists in any Zone document's pincodes array
+        const zone = await Zone.findOne({ pincodes: pincode });
+
+        const isDeliverable = !!zone;
+
+        res.json({
+            deliverable: isDeliverable,
+            message: isDeliverable 
+                ? `Delivery available in ${zone.name}.` 
+                : `Delivery not available to ${pincode} yet.`,
+            zone: isDeliverable ? {
+                name: zone.name,
+                deliveryFee: zone.deliveryFee,
+                minimumOrderValue: zone.minimumOrderValue
+            } : null
+        });
+    } catch (error) {
+        console.error('Pincode check error:', error);
+        // Respond with a general server error, ensuring the 'deliverable' status is explicitly false
+        res.status(500).json({ deliverable: false, message: 'Failed to check pincode availability due to server error.' });
+    }
+});// ==================== COUPON VALIDATION ROUTES ====================
+
+app.post('/api/coupon/validate', authMiddleware, async (req, res) => {
+    try {
+        const userId = req.user._id;
+        const { couponCode, subtotal } = req.body;
+
+        if (!couponCode || subtotal === undefined) {
+            return res.status(400).json({ valid: false, message: 'Coupon code and subtotal are required.' });
+        }
+        
+        const code = couponCode.trim().toUpperCase();
+
+        // 1. Handle special 'FIRST1' coupon logic
+        if (code === 'FIRST1') {
+            const firstOrder = await Order.findOne({ userId });
+            
+            if (firstOrder) {
+                return res.json({ valid: false, message: 'FIRST1 is only applicable for your first order.' });
+            }
+
+            const discount = Math.max(0, subtotal - 1);
+            return res.json({
+                valid: true,
+                discount: Math.round(discount),
+                description: "Your first order for just ₹1"
+            });
+        }
+        
+        // 2. Look up generic coupon in Offer model
+        const offer = await Offer.findOne({ code, isActive: true });
+
+        if (!offer) {
+            return res.json({ valid: false, message: 'Invalid or expired coupon code.' });
+        }
+
+        // 3. Check minimum order value
+        if (subtotal < offer.minOrderValue) {
+            return res.json({
+                valid: false,
+                message: `Minimum order value of ₹${offer.minOrderValue} required.`
+            });
+        }
+        
+        // 4. Calculate discount
+        let discount = 0;
+        const discountValue = parseFloat(offer.discount.replace(/[^0-9.]/g, ''));
+        
+        if (offer.discount.includes('%')) {
+            // Percentage discount
+            discount = subtotal * (discountValue / 100);
+            if (offer.maxDiscount) {
+                discount = Math.min(discount, offer.maxDiscount);
+            }
+        } else {
+            // Fixed amount discount
+            discount = discountValue;
+        }
+
+        res.json({
+            valid: true,
+            discount: Math.round(discount),
+            description: offer.title || `Applied ${offer.discount} discount.`
+        });
+
+    } catch (error) {
+        console.error('Coupon validation error:', error);
+        res.status(500).json({ valid: false, message: 'Failed to validate coupon.' });
+    }
+});
 app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     timestamp: new Date().toISOString(),
-    database: db.readyState === 1 ? 'Connected' : 'Disconnected'
+    database: db.readyState === 1 ? 'Connected' : 'Disconnected',
+    cloudinary: cloudinary.config().cloud_name ? 'Configured' : 'Not Configured'
   });
 });
-
-// ==================== ERROR HANDLING ====================
-
 app.use((error, req, res, next) => {
   console.error(error.stack);
+  
+  if (error instanceof multer.MulterError) {
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: 'File too large. Maximum size is 5MB.' });
+    }
+  }
+  
   res.status(500).json({ error: 'Something went wrong!' });
 });
 
 // 404 Handler
+app.use((req, res) => {
+  res.status(404).json({ error: 'Route not found' });
+});
 
 // ==================== START SERVER ====================
 
@@ -2152,4 +4205,5 @@ app.listen(PORT, () => {
   console.log(`🚀 Server is running on port ${PORT}`);
   console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
+  console.log(`☁️  Cloudinary: ${cloudinary.config().cloud_name ? 'Configured' : 'Not Configured'}`);
 });
