@@ -506,11 +506,20 @@ const zoneSchema = new mongoose.Schema({
   name: { type: String, required: true },
   pincodes: { type: [String], required: true },
   deliveryFee: { type: Number, required: true },
+  deliveryTime: { type: String, required: true },
   minimumOrderValue: { type: Number, required: true },
 });
 
 const Zone = mongoose.model('Zone', zoneSchema);
+// models/Notification.js
 
+const NotificationSchema = new mongoose.Schema(
+  {
+    message: { type: String, required: true }
+  },
+  { timestamps: true }
+);
+const Notification = mongoose.model('Notification', NotificationSchema)
 const BannerSchema = new mongoose.Schema({
   name: String,
   imageUrl: String // This will store Cloudinary URL
@@ -4075,34 +4084,48 @@ app.get('/api/offers/stats', async (req, res) => {
 app.get('/api/check-pincode/:pincode', async (req, res) => {
     try {
         const { pincode } = req.params;
-        
-        // Input Validation
+
+        // Validate 6-digit Indian PIN
         if (!/^\d{6}$/.test(pincode)) {
-            return res.status(400).json({ deliverable: false, message: 'Invalid 6-digit pincode format.' });
+            return res.status(400).json({
+                deliverable: false,
+                message: 'Invalid pincode format. Enter a valid 6-digit pincode.'
+            });
         }
 
-        // Check if the pincode exists in any Zone document's pincodes array
+        // Find zone where this pincode exists in the pincodes array
         const zone = await Zone.findOne({ pincodes: pincode });
 
-        const isDeliverable = !!zone;
+        if (!zone) {
+            return res.json({
+                deliverable: false,
+                message: `Delivery not available for pincode ${pincode}.`,
+                zone: null
+            });
+        }
 
-        res.json({
-            deliverable: isDeliverable,
-            message: isDeliverable 
-                ? `Delivery available in ${zone.name}.` 
-                : `Delivery not available to ${pincode} yet.`,
-            zone: isDeliverable ? {
+        // Deliverable
+        return res.json({
+            deliverable: true,
+            message: `Delivery available in ${zone.name}.`,
+            zone: {
                 name: zone.name,
                 deliveryFee: zone.deliveryFee,
-                minimumOrderValue: zone.minimumOrderValue
-            } : null
+                minimumOrderValue: zone.minimumOrderValue,
+                deliveryTime: zone.deliveryTime || "30–60 mins"   // <-- NEW FIELD
+            }
         });
+
     } catch (error) {
-        console.error('Pincode check error:', error);
-        // Respond with a general server error, ensuring the 'deliverable' status is explicitly false
-        res.status(500).json({ deliverable: false, message: 'Failed to check pincode availability due to server error.' });
+        console.error("Pincode check error:", error);
+
+        return res.status(500).json({
+            deliverable: false,
+            message: "Server error. Could not check pincode.",
+            zone: null
+        });
     }
-});// ==================== COUPON VALIDATION ROUTES ====================
+});
 
 app.post('/api/coupon/validate', authMiddleware, async (req, res) => {
     try {
@@ -4172,6 +4195,37 @@ app.post('/api/coupon/validate', authMiddleware, async (req, res) => {
         res.status(500).json({ valid: false, message: 'Failed to validate coupon.' });
     }
 });
+app.post("/api/notification", async (req, res) => {
+  try {
+    const { message } = req.body;
+
+    const notification = await Notification.create({ message });
+
+    res.json({
+      success: true,
+      notification,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+app.get("/api/notification", async (req, res) => {
+  try {
+    const latest = await Notification.findOne().sort({ createdAt: -1 });
+    res.json({ success: true, latest });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+app.get("/api/notifications/latest", async (req, res) => {
+  try {
+    const latest = await Notifications.findOne().sort({ createdAt: -1 });
+    res.json({ success: true, notification: latest });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Error fetching notification" });
+  }
+});
+
 app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK', 
