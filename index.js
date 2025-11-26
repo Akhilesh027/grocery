@@ -4219,7 +4219,7 @@ app.get("/api/notification", async (req, res) => {
 });
 app.get("/api/notifications/latest", async (req, res) => {
   try {
-    const latest = await Notifications.findOne().sort({ createdAt: -1 });
+    const latest = await Notification.findOne().sort({ createdAt: -1 });
     res.json({ success: true, notification: latest });
   } catch (err) {
     res.status(500).json({ success: false, message: "Error fetching notification" });
