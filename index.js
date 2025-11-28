@@ -724,24 +724,19 @@ function generateReferralCode(name) {
   const prefix = name ? name.slice(0, 3).toUpperCase() : "USR";
   return prefix + random;
 }
+// Example implementation of the utility function
+async function deleteFromCloudinary(publicId) {
+  if (!publicId) return; // Safety check
 
-// Cloudinary utility functions
-const deleteFromCloudinary = async (imageUrl) => {
-  try {
-    if (!imageUrl) return;
-    
-    // Extract public_id from Cloudinary URL
-    const publicId = imageUrl.split('/').slice(-1)[0].split('.')[0];
-    const folder = imageUrl.split('/').slice(-2, -1)[0];
-    
-    const fullPublicId = `${folder}/${publicId}`;
-    
-    await cloudinary.uploader.destroy(fullPublicId);
-    console.log(`Deleted image from Cloudinary: ${fullPublicId}`);
-  } catch (error) {
-    console.error('Error deleting from Cloudinary:', error);
+  // Assuming 'cloudinary' is configured globally
+  const result = await cloudinary.uploader.destroy(publicId);
+  
+  if (result.result !== 'ok' && result.result !== 'not found') {
+    // Treat unexpected results as a warning or error
+    throw new Error(`Cloudinary returned non-success status: ${result.result}`);
   }
-};
+  return result;
+}
 
 // ==================== ROUTES ====================
 
@@ -1338,39 +1333,64 @@ app.get("/api/banners", async (req, res) => {
   }
 });
 
-// Update banner with Cloudinary
 app.put("/api/banner/:id", uploadBanner.single("image"), async (req, res) => {
   try {
     const banner = await Banner.findById(req.params.id);
     if (!banner) {
+      // 404: Resource not found
       return res.status(404).json({ error: "Banner not found" });
     }
 
-    let updateData = { name: req.body.name || banner.name };
+    // 1. Prepare Update Data
+    // Ensure 'name' is updated if provided, otherwise keep the old name
+    let updateData = { 
+      name: req.body.name || banner.name 
+    };
 
-    // If new image uploaded → replace old image
+    // 2. Handle Image Replacement (If a new file is uploaded)
     if (req.file) {
-      // Delete old image from Cloudinary
-      if (banner.imageUrl) {
-        await deleteFromCloudinary(banner.imageUrl);
+      // 2a. Delete old image from Cloudinary (using the stored publicId)
+      if (banner.publicId) {
+        try {
+          // Use the stored publicId for deletion (safest method)
+          await deleteFromCloudinary(banner.publicId);
+        } catch (cleanupError) {
+          // Log cleanup failure but DO NOT stop the main update flow
+          console.warn(`Cloudinary cleanup failed for ID ${banner.publicId}. Continuing update. Error: ${cleanupError.message}`);
+        }
       }
 
-      updateData.imageUrl = req.file.path; // Cloudinary secure URL
+      // 2b. Update the database fields with new file details
+      // req.file.path holds the new Cloudinary URL (secureUrl)
+      updateData.imageUrl = req.file.path; 
+      // req.file.filename or req.file.public_id holds the new public ID
+      updateData.publicId = req.file.filename || req.file.public_id; 
     }
 
+    // 3. Perform Database Update
     const updatedBanner = await Banner.findByIdAndUpdate(
       req.params.id,
       updateData,
-      { new: true }
+      // { new: true } returns the updated document
+      // { runValidators: true } ensures Mongoose schema validation runs on the update
+      { new: true, runValidators: true } 
     );
 
     res.json(updatedBanner);
+
   } catch (error) {
-    console.error("Update Banner Error:", error);
-    res.status(500).json({ error: "Update failed" });
+    // 4. Handle Errors
+    console.error("Update Banner Fatal Error:", error);
+
+    // Mongoose Validation Error (e.g., required field is missing)
+    if (error.name === 'ValidationError') {
+        return res.status(400).json({ error: error.message });
+    }
+
+    // Generic Internal Server Error
+    res.status(500).json({ error: error.message || "Update failed due to server error." });
   }
 });
-
 // Delete banner with Cloudinary cleanup
 app.delete("/api/banner/:id", async (req, res) => {
   try {
@@ -1498,8 +1518,6 @@ app.delete("/api/cart/:userId/:productId", async (req, res) => {
     });
   }
 });
-
-// ==================== ADDRESS ROUTES ====================
 
 app.get('/api/address', authMiddleware, async (req, res) => {
   try {
