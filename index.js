@@ -717,8 +717,6 @@ const authMiddleware = (req, res, next) => {
   }
 };
 
-// ==================== UTILITY FUNCTIONS ====================
-
 function generateReferralCode(name) {
   const random = Math.floor(1000 + Math.random() * 9000);
   const prefix = name ? name.slice(0, 3).toUpperCase() : "USR";
