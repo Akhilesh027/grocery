@@ -515,7 +515,9 @@ const Zone = mongoose.model('Zone', zoneSchema);
 
 const NotificationSchema = new mongoose.Schema(
   {
-    message: { type: String, required: true }
+    message: { type: String, required: true },
+    read: { type: Boolean, default: false },
+
   },
   { timestamps: true }
 );
@@ -716,6 +718,7 @@ const authMiddleware = (req, res, next) => {
     res.status(400).json({ message: "Invalid token" });
   }
 };
+
 
 function generateReferralCode(name) {
   const random = Math.floor(1000 + Math.random() * 9000);
@@ -3633,51 +3636,36 @@ app.get('/api/admin/orders/stats/overview', async (req, res) => {
 
 // ==================== ADMIN LOYALTY COINS MANAGEMENT ====================
 
-// Add loyalty coins to user
-app.post('/api/admin/users/:userId/loyalty-coins', authMiddleware, async (req, res) => {
+app.post('/api/admin/users/:userId/loyalty-coins', async (req, res) => {
   try {
     const { userId } = req.params;
     const { coins, reason, orderId } = req.body;
 
-    // Validate input
-    if (!coins || coins <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Valid coins amount is required'
-      });
+    const coinValue = parseInt(coins);
+    if (isNaN(coinValue) || coinValue <= 0) {
+      return res.status(400).json({ success: false, message: 'Valid coins amount is required' });
     }
 
     if (!reason) {
-      return res.status(400).json({
-        success: false,
-        message: 'Reason for adding coins is required'
-      });
+      return res.status(400).json({ success: false, message: 'Reason for adding coins is required' });
     }
 
-    // Check if user exists
     const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
-      });
-    }
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    // Update user's loyalty coins
     const previousBalance = user.loyaltyCoins;
-    user.loyaltyCoins += parseInt(coins);
+    user.loyaltyCoins += coinValue;
     await user.save();
 
-    // Create loyalty coins transaction record
     const loyaltyTransaction = new LoyaltyTransaction({
-      userId: user._id,
+      userId: userId,
       type: 'admin_added',
-      coins: parseInt(coins),
+      coins: coinValue,
       previousBalance,
       newBalance: user.loyaltyCoins,
-      reason: reason,
+      reason,
       orderId: orderId || null,
-      adminId: req.user._id,
+      adminId: userId,
       status: 'completed'
     });
 
@@ -3685,23 +3673,23 @@ app.post('/api/admin/users/:userId/loyalty-coins', authMiddleware, async (req, r
 
     res.json({
       success: true,
-      message: `Successfully added ${coins} loyalty coins to user`,
+      message: `Successfully added ${coinValue} loyalty coins to user`,
       user: {
-        _id: user._id,
+        _id: userId,
         name: user.name,
         email: user.email,
         loyaltyCoins: user.loyaltyCoins
       },
       transaction: {
         id: loyaltyTransaction._id,
-        coins: coins,
-        reason: reason,
+        coins: coinValue,
+        reason,
         timestamp: loyaltyTransaction.createdAt
       }
     });
 
   } catch (error) {
-    console.error('Add loyalty coins error:', error);
+    console.error('Add loyalty coins error:', error.stack);
     res.status(500).json({
       success: false,
       message: 'Failed to add loyalty coins',
@@ -3711,7 +3699,7 @@ app.post('/api/admin/users/:userId/loyalty-coins', authMiddleware, async (req, r
 });
 
 // Remove loyalty coins from user
-app.post('/api/admin/users/:userId/loyalty-coins/deduct', authMiddleware, async (req, res) => {
+app.post('/api/admin/users/:userId/loyalty-coins/deduct', async (req, res) => {
   try {
     const { userId } = req.params;
     const { coins, reason } = req.body;
@@ -3755,13 +3743,13 @@ app.post('/api/admin/users/:userId/loyalty-coins/deduct', authMiddleware, async 
 
     // Create loyalty coins transaction record
     const loyaltyTransaction = new LoyaltyTransaction({
-      userId: user._id,
+      userId: userId,
       type: 'admin_deducted',
       coins: parseInt(coins),
       previousBalance,
       newBalance: user.loyaltyCoins,
       reason: reason,
-      adminId: req.user._id,
+      adminId: userId,
       status: 'completed'
     });
 
@@ -3771,7 +3759,7 @@ app.post('/api/admin/users/:userId/loyalty-coins/deduct', authMiddleware, async 
       success: true,
       message: `Successfully deducted ${coins} loyalty coins from user`,
       user: {
-        _id: user._id,
+        _id: userId,
         name: user.name,
         email: user.email,
         loyaltyCoins: user.loyaltyCoins
@@ -4225,22 +4213,95 @@ app.post("/api/notification", async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-app.get("/api/notification", async (req, res) => {
-  try {
-    const latest = await Notification.findOne().sort({ createdAt: -1 });
-    res.json({ success: true, latest });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
 app.get("/api/notifications/latest", async (req, res) => {
   try {
-    const latest = await Notification.findOne().sort({ createdAt: -1 });
-    res.json({ success: true, notification: latest });
+    const notifications = await Notification.find().sort({ createdAt: -1 });
+    return res.status(200).json({ success: true, notifications });
   } catch (err) {
-    res.status(500).json({ success: false, message: "Error fetching notification" });
+    return res.status(500).json({ success: false, message: "Failed to fetch notifications" });
   }
 });
+
+// Mark single notification as READ
+app.patch("/api/notifications/:id/read", async (req, res) => {
+  try {
+    await Notification.findByIdAndUpdate(req.params.id, { read: true });
+    return res.status(200).json({ success: true, message: "Notification marked as read" });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: "Failed to update" });
+  }
+});
+
+// Mark ALL notifications as read
+app.patch("/api/notifications/mark-all-read", async (req, res) => {
+  try {
+    await Notification.updateMany({}, { read: true });
+    return res.status(200).json({ success: true, message: "All notifications marked as read" });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: "Failed to update" });
+  }
+});
+app.delete("/api/notifications/:id", async (req, res) => {
+  await Notification.findByIdAndDelete(req.params.id);
+  res.json({ success: true });
+});
+app.delete("/api/notifications", async (req, res) => {
+  await Notification.deleteMany({});
+  res.json({ success: true });
+});
+
+// Get all referrals with user details populated
+app.get("/api/referrals", async (req, res) => {
+  try {
+    const referrals = await Referral.find()
+      .populate("referrerId", "name email phone")   // fields you want to show
+      .populate("referredUserId", "name email phone")
+      .sort({ createdAt: -1 });
+
+    res.json({ success: true, referrals });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+app.get("/api/referrals/user/:id", async (req, res) => {
+  try {
+    const referrals = await Referral.find({ referrerId: req.params.id })
+      .populate("referrerId", "name email phone")
+      .populate("referredUserId", "name email phone");
+
+    res.json({ success: true, referrals });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// Update coins
+app.patch("/api/referrals/:id/update-coins", async (req, res) => {
+  try {
+    const referral = await Referral.findByIdAndUpdate(
+      req.params.id,
+      { rewardCoins: req.body.rewardCoins },
+      { new: true }
+    );
+    res.json({ success: true, referral });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update status
+app.patch("/api/referrals/:id/update-status", async (req, res) => {
+  try {
+    const referral = await Referral.findByIdAndUpdate(
+      req.params.id,
+      { status: req.body.status },
+      { new: true }
+    );
+    res.json({ success: true, referral });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 app.get('/api/health', (req, res) => {
   res.json({ 
