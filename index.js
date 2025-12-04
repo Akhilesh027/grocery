@@ -144,7 +144,7 @@ const ProductSchema = new mongoose.Schema({
   price: { type: Number, required: true },
   mrp: { type: Number, required: true },
   discount: Number,
-  
+  coinValue: { type: Number, default: 0 }, // <-- NEW: Coin value earned by user
   images: [String],
   // Inventory
   inStock: { type: Boolean, default: true },
@@ -286,11 +286,13 @@ const orderSchema = new mongoose.Schema({
   orderId: {
     type: String,
     unique: true,
+    index: true
   },
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true
+    required: true,
+    index: true
   },
   items: [{
     productId: {
@@ -302,16 +304,34 @@ const orderSchema = new mongoose.Schema({
     image: String,
     quantity: {
       type: Number,
-      required: true
+      required: true,
+      min: 1
     },
     price: {
       type: Number,
-      required: true
+      required: true,
+      min: 0
+    },
+    isOfferProduct: {
+      type: Boolean,
+      default: false
+    },
+    offerCategory: {
+      name: String,
+      icon: String,
+      color: String
     }
   }],
   address: {
-    type: Object,
-    required: true
+    label: String,
+    fullName: String,
+    mobile: String,
+    pincode: String,
+    address: String,
+    locality: String,
+    city: String,
+    state: String,
+    landmark: String
   },
   paymentMethod: {
     type: String,
@@ -319,47 +339,100 @@ const orderSchema = new mongoose.Schema({
     required: true
   },
   deliverySlot: String,
+  deliveryTime: String, // For estimated delivery time
   coupon: {
     code: String,
     discount: Number,
-    description: String
+    description: String,
+    type: String, // 'percentage' or 'fixed'
+    minOrder: Number
   },
-  referralCoinsUsed: {
+  
+  // Loyalty coins fields
+  coinsEarned: {
     type: Number,
-    default: 0
+    default: 0,
+    min: 0
   },
-  subtotal: Number,
-  discount: Number,
-  deliveryFee: Number,
-  total: Number,
+  coinsUsed: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  walletDiscount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  
+  // Order amounts
+  subtotal: {
+    type: Number,
+    required: true,
+    min: 0
+  },
+  discount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  deliveryFee: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  total: {
+    type: Number,
+    required: true,
+    min: 0
+  },
+  totalAmount: {
+    type: Number,
+    required: true,
+    min: 0
+  },
 
+  // Order status
   status: {
     type: String,
-    enum: ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled'],
-    default: 'pending'
+    enum: ['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded'],
+    default: 'pending',
+    index: true
   },
   paymentStatus: {
     type: String,
-    enum: ['pending', 'paid', 'failed'],
-    default: 'pending'
+    enum: ['pending', 'paid', 'failed', 'refunded'],
+    default: 'pending',
+    index: true
   },
-  orderStatus: {
-    type: String,
-    enum: ['new', 'processing', 'shipped', 'delivered', 'cancelled'],
-    default: 'new'
-  }, 
-  coinsEarned: {
-    type: Number,
-    default: 0
+  
+  // Additional flags
+  hasOfferProducts: {
+    type: Boolean,
+    default: false,
+    index: true
   },
-  referralCoinsUsed: {
-    type: Number,
-    default: 0
+  isOfferRestricted: {
+    type: Boolean,
+    default: false
   },
-      statusHistory: [{
+  restrictionReason: String,
+  
+  // Tracking
+  trackingNumber: String,
+  carrier: String,
+  estimatedDelivery: Date,
+  deliveredAt: Date,
+  
+  // Status history for audit trail
+  statusHistory: [{
     status: {
       type: String,
-      enum: ['new', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled']
+      enum: ['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded']
+    },
+    paymentStatus: {
+      type: String,
+      enum: ['pending', 'paid', 'failed', 'refunded']
     },
     timestamp: {
       type: Date,
@@ -371,20 +444,151 @@ const orderSchema = new mongoose.Schema({
       ref: 'User'
     }
   }],
-  totalAmount: Number,
+  
+  // Admin notes
+  adminNotes: String,
+  cancellationReason: String,
+  refundAmount: Number,
+  refundDate: Date
 }, {
-  timestamps: true
+  timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
 });
 
+// Virtual for checking if order has 1rs offer products
+orderSchema.virtual('offerProducts').get(function() {
+  return this.items.filter(item => item.isOfferProduct || 
+    (item.offerCategory && item.offerCategory.name === '1rs'));
+});
+
+// Virtual for total items count
+orderSchema.virtual('totalItems').get(function() {
+  return this.items.reduce((sum, item) => sum + item.quantity, 0);
+});
+
+// Virtual for formatted order date
+orderSchema.virtual('formattedDate').get(function() {
+  return this.createdAt.toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric'
+  });
+});
+
+// Pre-save middleware
 orderSchema.pre('save', function(next) {
+  // Generate order ID if not present
   if (!this.orderId) {
-    this.orderId = `ORD${Date.now()}${Math.random().toString(36).substr(2, 5)}`.toUpperCase();
+    const timestamp = Date.now();
+    const random = Math.random().toString(36).substr(2, 5).toUpperCase();
+    this.orderId = `ORD-${timestamp}-${random}`;
   }
+  
+  // Check if order has offer products
+  if (!this.hasOfferProducts) {
+    this.hasOfferProducts = this.items.some(item => 
+      item.isOfferProduct || (item.offerCategory && item.offerCategory.name === '1rs')
+    );
+  }
+  
+  // Add status to history when status changes
+  if (this.isModified('status') || this.isModified('paymentStatus')) {
+    if (!this.statusHistory) {
+      this.statusHistory = [];
+    }
+    
+    this.statusHistory.push({
+      status: this.status,
+      paymentStatus: this.paymentStatus,
+      timestamp: new Date(),
+      notes: this.isModified('status') ? `Status changed to ${this.status}` : 
+             `Payment status changed to ${this.paymentStatus}`
+    });
+  }
+  
   next();
 });
 
-const Order = mongoose.model('Order', orderSchema);
+// Indexes for better query performance
+orderSchema.index({ userId: 1, createdAt: -1 });
+orderSchema.index({ status: 1, createdAt: -1 });
+orderSchema.index({ 'items.productId': 1 });
+orderSchema.index({ hasOfferProducts: 1, createdAt: -1 });
+orderSchema.index({ 'address.pincode': 1 });
+orderSchema.index({ createdAt: -1 });
 
+// Static method to check if user can purchase offer product
+orderSchema.statics.canPurchaseOfferProduct = async function(userId, productId) {
+  const oneMonthAgo = new Date();
+  oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+  
+  const existingPurchase = await this.findOne({
+    userId: userId,
+    'items.productId': productId,
+    'items.isOfferProduct': true,
+    status: { $in: ['confirmed', 'processing', 'shipped', 'delivered'] },
+    createdAt: { $gte: oneMonthAgo }
+  });
+  
+  return !existingPurchase;
+};
+
+// Static method to get user's offer purchase history
+orderSchema.statics.getOfferPurchaseHistory = async function(userId, limit = 10) {
+  const oneMonthAgo = new Date();
+  oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+  
+  return this.find({
+    userId: userId,
+    hasOfferProducts: true,
+    status: { $in: ['confirmed', 'processing', 'shipped', 'delivered'] },
+    createdAt: { $gte: oneMonthAgo }
+  })
+  .sort({ createdAt: -1 })
+  .limit(limit)
+  .populate('items.productId', 'title price category images')
+  .select('orderId items total createdAt status');
+};
+
+// Instance method to check if order contains specific offer product
+orderSchema.methods.containsOfferProduct = function(productId) {
+  return this.items.some(item => 
+    item.productId.toString() === productId.toString() && 
+    (item.isOfferProduct || (item.offerCategory && item.offerCategory.name === '1rs'))
+  );
+};
+
+// Instance method to get offer products in this order
+orderSchema.methods.getOfferProducts = function() {
+  return this.items.filter(item => 
+    item.isOfferProduct || (item.offerCategory && item.offerCategory.name === '1rs')
+  );
+};
+
+// Instance method to calculate total discount
+orderSchema.methods.getTotalDiscount = function() {
+  const couponDiscount = this.coupon?.discount || 0;
+  return this.discount + couponDiscount + this.walletDiscount;
+};
+
+// Instance method to mark as delivered
+orderSchema.methods.markAsDelivered = function(notes = '') {
+  this.status = 'delivered';
+  this.paymentStatus = 'paid';
+  this.deliveredAt = new Date();
+  
+  this.statusHistory.push({
+    status: 'delivered',
+    paymentStatus: 'paid',
+    timestamp: new Date(),
+    notes: notes || 'Order delivered successfully'
+  });
+  
+  return this.save();
+};
+
+const Order = mongoose.model('Order', orderSchema);
 // Address Schema
 const addressSchema = new mongoose.Schema({
   userId: {
@@ -470,7 +674,7 @@ referralSchema.index({ referrerId: 1, status: 1 });
 
 referralSchema.methods.completeReferral = function(orderId) {
   this.status = 'completed';
-  this.rewardCoins = 50;
+  this.rewardCoins = 200;
   this.completedAt = new Date();
   this.completedOrderId = orderId;
   return this.save();
@@ -478,7 +682,6 @@ referralSchema.methods.completeReferral = function(orderId) {
 
 const Referral = mongoose.model('Referral', referralSchema);
 
-// Referral Usage Schema
 const referralUsageSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -511,7 +714,19 @@ const zoneSchema = new mongoose.Schema({
 });
 
 const Zone = mongoose.model('Zone', zoneSchema);
-// models/Notification.js
+const couponSchema = new mongoose.Schema(
+  {
+    code: String,
+    description: String,
+    type: String,
+    value: Number,
+    minOrder: Number,
+    expiresAt: Date,
+    active: Boolean,
+  },
+  { timestamps: true }
+);
+const Coupon = mongoose.model('Coupon', couponSchema);
 
 const NotificationSchema = new mongoose.Schema(
   {
@@ -770,12 +985,11 @@ app.post("/api/register", async (req, res) => {
     if (referralCode) {
       const referrer = await User.findOne({ referralCode });
       if (referrer) {
-        referrer.loyaltyCoins += 50;
+        referrer.loyaltyCoins += 200;
         referrer.referralCount += 1;
         await referrer.save();
 
-        newUser.loyaltyCoins = 20;
-
+        newUser.loyaltyCoins = 200;
         await Referral.create({
           referrerId: referrer._id,
           referredUserId: newUser._id,
@@ -1035,7 +1249,6 @@ app.get('/api/products/:id', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
 app.post('/api/products', uploadProduct.array('images', 10), async (req, res) => {
   try {
     console.log('Received product creation request');
@@ -1053,6 +1266,9 @@ app.post('/api/products', uploadProduct.array('images', 10), async (req, res) =>
       sku,
       price,
       mrp,
+      // --- NEW: Extract coinValue ---
+      coinValue, 
+      // -----------------------------
       description,
       brand,
       mainCategory,
@@ -1098,6 +1314,8 @@ app.post('/api/products', uploadProduct.array('images', 10), async (req, res) =>
     let parsedSpecifications = [];
     try {
       if (specifications) {
+        // Assuming specifications are stored as key-value pairs in the database
+        // and sent as a JSON string from the frontend.
         parsedSpecifications = JSON.parse(specifications);
       }
     } catch (parseError) {
@@ -1114,6 +1332,7 @@ app.post('/api/products', uploadProduct.array('images', 10), async (req, res) =>
       sku,
       price: parseFloat(price),
       mrp: parseFloat(mrp),
+      coinValue: parseInt(coinValue) || 0, // <-- NEW: Parse and include coinValue
       description,
       brand,
       category: {
@@ -1164,7 +1383,8 @@ app.post('/api/products', uploadProduct.array('images', 10), async (req, res) =>
     if (req.files && req.files.length > 0) {
       try {
         for (const file of req.files) {
-          await deleteFromCloudinary(file.path);
+          // Assuming deleteFromCloudinary is defined elsewhere
+          await deleteFromCloudinary(file.path); 
         }
       } catch (deleteError) {
         console.error('Error cleaning up images:', deleteError);
@@ -1661,15 +1881,13 @@ app.delete('/api/address/:id', authMiddleware, async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 });
-
 app.post('/api/order', authMiddleware, async (req, res) => {
   const session = await mongoose.startSession();
 
   try {
     await session.startTransaction();
 
-    // Debug: Check authentication
-    console.log('User in order endpoint:', req.user);
+    console.log('=== ORDER PLACEMENT STARTED ===');
     
     if (!req.user || !req.user._id) {
       await session.abortTransaction();
@@ -1686,15 +1904,16 @@ app.post('/api/order', authMiddleware, async (req, res) => {
       paymentMethod,
       deliverySlot,
       coupon,
-      // Remove referralCoinsUsed from here - handle separately
       subtotal,
       discount,
       deliveryFee,
       total,
       coinsEarned = Math.round(total * 0.05),
+      walletDiscount = 0,
+      coinsUsed = 0,
     } = req.body;
 
-    // ✅ Enhanced validation
+    // Basic validations...
     if (!total || total <= 0) {
       await session.abortTransaction();
       return res.status(400).json({ 
@@ -1703,26 +1922,7 @@ app.post('/api/order', authMiddleware, async (req, res) => {
       });
     }
 
-    if (!address || !items || items.length === 0) {
-      await session.abortTransaction();
-      return res.status(400).json({ 
-        success: false, 
-        message: "Order data is incomplete" 
-      });
-    }
-
-    // ✅ Validate items structure
-    for (const item of items) {
-      if (!item.productId || !item.quantity || item.quantity <= 0) {
-        await session.abortTransaction();
-        return res.status(400).json({ 
-          success: false, 
-          message: "Invalid item data" 
-        });
-      }
-    }
-
-    // ✅ Validate user exists
+    // Validate user
     const userExists = await User.findById(userId).session(session);
     if (!userExists) {
       await session.abortTransaction();
@@ -1732,29 +1932,145 @@ app.post('/api/order', authMiddleware, async (req, res) => {
       });
     }
 
-    // ✅ Check COD limit
-    if (paymentMethod === 'cod' && total > 5000) {
-      await session.abortTransaction();
-      return res.status(400).json({ 
-        success: false, 
-        message: "Cash on Delivery not available for orders above ₹5000" 
+    // ✅ **FIXED: Check 1rs offer product restriction**
+    console.log('\n=== CHECKING 1RS OFFER RESTRICTION ===');
+    
+    // First, get the 1rs offer category ID - declare it once at the top
+    const oneRsOfferCategory = await OfferCategory.findOne({ name: '1rs' });
+    const oneRsOfferCategoryId = oneRsOfferCategory?._id?.toString();
+    
+    console.log('1rs Offer Category ID:', oneRsOfferCategoryId);
+    
+    if (oneRsOfferCategoryId) {
+      const oneMonthAgo = new Date();
+      oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+      
+      const productIds = items.map(item => item.productId);
+      console.log('Product IDs in order:', productIds);
+      
+      // Find products that have offerCategory matching 1rs ID
+      const products = await Product.find({
+        _id: { $in: productIds }
+      }).session(session);
+      
+      const offerProductIds = [];
+      const offerProductMap = {};
+      
+      products.forEach(product => {
+        const productOfferCategoryId = product.category?.offerCategory?.toString ? 
+          product.category.offerCategory.toString() : 
+          product.category?.offerCategory;
+        
+        const is1rs = productOfferCategoryId === oneRsOfferCategoryId;
+        
+        console.log(`Product ${product._id}: ${product.title}`);
+        console.log('  Product offerCategory:', productOfferCategoryId);
+        console.log('  Is 1rs?', is1rs);
+        console.log('  Price:', product.price);
+        
+        if (is1rs) {
+          offerProductIds.push(product._id.toString());
+          offerProductMap[product._id.toString()] = product.title;
+        }
       });
+      
+      console.log('1rs offer products found:', offerProductIds.length);
+      console.log('1rs product IDs:', offerProductIds);
+      
+      if (offerProductIds.length > 0) {
+        // Check if user has purchased any of these 1rs products before
+        const recentPurchases = await Order.find({
+          userId: userId,
+          createdAt: { $gte: oneMonthAgo }
+        }).session(session);
+        
+        console.log('Recent purchases found:', recentPurchases.length);
+        
+        const restrictedProducts = new Set();
+        
+        // We need to check each order's items
+        for (const order of recentPurchases) {
+          // Check if order has any 1rs products
+          for (const item of order.items) {
+            const itemId = item.productId?.toString ? item.productId.toString() : item.productId;
+            
+            if (offerProductIds.includes(itemId)) {
+              // This is a 1rs product in a previous order
+              restrictedProducts.add(itemId);
+              console.log(`❌ Found restricted product: ${itemId} in order ${order.orderId}`);
+            }
+          }
+        }
+        
+        if (restrictedProducts.size > 0) {
+          await session.abortTransaction();
+          
+          const restrictedNames = Array.from(restrictedProducts).map(id => offerProductMap[id] || 'Unknown');
+          
+          return res.status(400).json({
+            success: false,
+            message: `You have already purchased these 1rs offer products in the last month: ${restrictedNames.join(', ')}`,
+            restrictedProducts: Array.from(restrictedProducts)
+          });
+        }
+      }
+    } else {
+      console.log('1rs offer category not found in database');
     }
+    
+    console.log('✅ No restriction found, proceeding with order');
 
-    // ✅ Generate unique orderId
+    // ✅ Generate order ID
     const orderId = "ORD-" + Date.now() + "-" + Math.random().toString(36).substr(2, 9).toUpperCase();
 
-    // ✅ Create order object - set referralCoinsUsed to 0 initially
-    const orderData = {
-      orderId,
-      userId,
-      items: items.map(item => ({
+    // ✅ Prepare order items with CORRECT offer detection
+    console.log('\n=== PREPARING ORDER ITEMS ===');
+    
+    // Get all products again for item preparation - use the same productIds array
+    const allProductIds = items.map(item => item.productId);
+    const allProducts = await Product.find({
+      _id: { $in: allProductIds }
+    }).session(session);
+    
+    const orderItems = [];
+    
+    for (const item of items) {
+      const product = allProducts.find(p => p._id.toString() === item.productId);
+      
+      // Check if this is a 1rs offer product
+      let isOfferProduct = false;
+      if (product && oneRsOfferCategoryId) {
+        const productOfferCategoryId = product.category?.offerCategory?.toString ? 
+          product.category.offerCategory.toString() : 
+          product.category?.offerCategory;
+        
+        isOfferProduct = productOfferCategoryId === oneRsOfferCategoryId;
+      }
+      
+      console.log(`Item ${item.productId}: ${product?.title || 'Unknown'}`);
+      console.log('  Price:', product?.price);
+      console.log('  Is 1rs offer?', isOfferProduct);
+      
+      orderItems.push({
         productId: item.productId,
         quantity: item.quantity,
         price: item.price,
-        title: item.title,
-        image: item.image
-      })),
+        title: item.title || product?.title || 'Unknown Product',
+        image: item.image || product?.images?.[0] || '',
+        isOfferProduct: isOfferProduct,
+        // Store the offer category ID for reference
+        offerCategoryId: isOfferProduct ? oneRsOfferCategoryId : undefined
+      });
+    }
+
+    const hasOfferProducts = orderItems.some(item => item.isOfferProduct);
+    console.log('Order has offer products?', hasOfferProducts);
+
+    // ✅ Create order
+    const orderData = {
+      orderId,
+      userId,
+      items: orderItems,
       address: {
         label: address.label,
         fullName: address.fullName,
@@ -1773,13 +2089,15 @@ app.post('/api/order', authMiddleware, async (req, res) => {
         discount: coupon.discount,
         description: coupon.description
       } : undefined,
-      referralCoinsUsed: 0, // Start with 0, will be updated in separate endpoint
+      coinsUsed: coinsUsed,
+      walletDiscount: walletDiscount,
       subtotal,
       discount,
       deliveryFee,
       total,
-      coinsEarned,
       totalAmount: total,
+      coinsEarned,
+      hasOfferProducts,
       status: "confirmed",
       paymentStatus: paymentMethod === 'cod' ? 'pending' : 'paid',
       orderStatus: "new"
@@ -1787,8 +2105,19 @@ app.post('/api/order', authMiddleware, async (req, res) => {
 
     const order = new Order(orderData);
     const savedOrder = await order.save({ session });
+    console.log('✅ Order saved:', savedOrder.orderId);
 
-    // ✅ Update user loyalty coins (only add earned coins, don't deduct used coins here)
+    // ✅ Process wallet payment
+    if (paymentMethod === 'wallet' && coinsUsed > 0) {
+      console.log(`\nProcessing wallet payment: ${coinsUsed} coins`);
+      await User.findByIdAndUpdate(
+        userId,
+        { $inc: { loyaltyCoins: -coinsUsed } },
+        { session }
+      );
+    }
+
+    // ✅ Add earned coins
     if (coinsEarned > 0) {
       await User.findByIdAndUpdate(
         userId,
@@ -1797,7 +2126,21 @@ app.post('/api/order', authMiddleware, async (req, res) => {
       );
     }
 
-    // ✅ Referral completion logic
+    // ✅ Clear cart
+    await Cart.deleteMany({ userId }).session(session);
+    console.log('✅ Cart cleared');
+
+    // ✅ Update stock
+    for (const item of items) {
+      await Product.findByIdAndUpdate(
+        item.productId,
+        { $inc: { stockQuantity: -item.quantity } },
+        { session }
+      );
+    }
+    console.log('✅ Stock updated');
+
+    // ✅ Referral completion
     if (userExists.referredBy) {
       try {
         const referral = await Referral.findOne({
@@ -1806,22 +2149,16 @@ app.post('/api/order', authMiddleware, async (req, res) => {
         }).session(session);
 
         if (referral) {
-          // Update referral status
           referral.status = "completed";
           referral.completedAt = new Date();
           referral.orderId = savedOrder.orderId;
           await referral.save({ session });
 
-          // Award bonus coins to both users
-          const bonusCoins = 50;
+          const bonusCoins = 200;
 
           await User.findByIdAndUpdate(
             referral.referrerId,
-            { 
-              $inc: { 
-                loyaltyCoins: bonusCoins
-              } 
-            },
+            { $inc: { loyaltyCoins: bonusCoins } },
             { session }
           );
 
@@ -1831,50 +2168,39 @@ app.post('/api/order', authMiddleware, async (req, res) => {
             { session }
           );
 
-          console.log(`Referral completed: ${referral._id}, bonus coins awarded to both users`);
+          console.log('✅ Referral completed with bonus coins');
         }
       } catch (referralError) {
         console.error("Referral processing error:", referralError);
-        // Don't fail the entire order if referral processing fails
       }
-    }
-
-    // ✅ Clear user's cart
-    const cartDeleteResult = await Cart.deleteMany({ userId }).session(session);
-    console.log(`Cleared cart for user ${userId}, deleted ${cartDeleteResult.deletedCount} items`);
-
-    // ✅ Update product stock (if you have inventory management)
-    try {
-      for (const item of items) {
-        const productUpdate = await Product.findByIdAndUpdate(
-          item.productId,
-          { $inc: { stock: -item.quantity } },
-          { session, new: true }
-        );
-        if (productUpdate) {
-          console.log(`Updated stock for product ${item.productId}, new stock: ${productUpdate.stock}`);
-        }
-      }
-    } catch (stockError) {
-      console.error("Stock update error:", stockError);
-      // Don't fail the entire order if stock update fails
     }
 
     await session.commitTransaction();
-    console.log(`Order ${savedOrder.orderId} placed successfully for user ${userId}`);
+    console.log('✅ ORDER COMPLETED SUCCESSFULLY');
 
-    // ✅ Send success response
+    // Get updated user
+    const updatedUser = await User.findById(userId);
+    
     res.status(201).json({
       success: true,
       message: "Order placed successfully.",
       orderId: savedOrder.orderId,
       total: savedOrder.total,
       coinsEarned: savedOrder.coinsEarned,
-      referralCoinsUsed: 0, // Will be updated in separate call
+      coinsUsed: savedOrder.coinsUsed,
+      walletDiscount: savedOrder.walletDiscount,
+      remainingCoins: updatedUser.loyaltyCoins,
+      hasOfferProducts: savedOrder.hasOfferProducts,
       order: {
         _id: savedOrder._id,
         orderId: savedOrder.orderId,
-        items: savedOrder.items,
+        items: savedOrder.items.map(item => ({
+          productId: item.productId,
+          title: item.title,
+          quantity: item.quantity,
+          price: item.price,
+          isOfferProduct: item.isOfferProduct
+        })),
         address: savedOrder.address,
         paymentMethod: savedOrder.paymentMethod,
         deliverySlot: savedOrder.deliverySlot,
@@ -1882,7 +2208,6 @@ app.post('/api/order', authMiddleware, async (req, res) => {
         discount: savedOrder.discount,
         deliveryFee: savedOrder.deliveryFee,
         total: savedOrder.total,
-        coinsEarned: savedOrder.coinsEarned,
         status: savedOrder.status,
         paymentStatus: savedOrder.paymentStatus,
         createdAt: savedOrder.createdAt
@@ -1891,7 +2216,7 @@ app.post('/api/order', authMiddleware, async (req, res) => {
 
   } catch (error) {
     await session.abortTransaction();
-    console.error("Order placement error:", error);
+    console.error('❌ ORDER FAILED:', error);
     
     let errorMessage = "Internal server error during order processing.";
     let statusCode = 500;
@@ -2345,9 +2670,6 @@ app.get('/api/orders/:id', authMiddleware, async (req, res) => {
   }
 });
 
-// ==================== REFERRAL ROUTES ====================
-
-// Get referral code
 app.get("/api/referral-code/:userId", async (req, res) => {
   try {
     const user = await User.findById(req.params.userId);
@@ -2358,7 +2680,6 @@ app.get("/api/referral-code/:userId", async (req, res) => {
   }
 });
 
-// Get referral details
 app.get("/api/referrals/:userId", async (req, res) => {
   try {
     const user = await User.findById(req.params.userId);
@@ -2368,7 +2689,7 @@ app.get("/api/referrals/:userId", async (req, res) => {
 
     const completed = referrals.filter(r => r.status === "completed").length;
     const pending = referrals.filter(r => r.status === "pending").length;
-    const totalEarned = completed * 50;
+    const totalEarned = completed * 200;
 
     res.json({
       referrals,
@@ -2484,7 +2805,6 @@ app.post('/api/referrals/use-coins', authMiddleware, async (req, res) => {
     await session.endSession();
   }
 });
-// ==================== DASHBOARD ROUTES ====================
 
 app.get('/api/dashboard/stats', async (req, res) => {
   try {
@@ -2564,8 +2884,6 @@ app.get('/api/dashboard/stats', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-// ==================== ADMIN ORDER ROUTES ====================
 
 app.get('/api/admin/orders', async (req, res) => {
   try {
@@ -4131,74 +4449,6 @@ app.get('/api/check-pincode/:pincode', async (req, res) => {
     }
 });
 
-app.post('/api/coupon/validate', authMiddleware, async (req, res) => {
-    try {
-        const userId = req.user._id;
-        const { couponCode, subtotal } = req.body;
-
-        if (!couponCode || subtotal === undefined) {
-            return res.status(400).json({ valid: false, message: 'Coupon code and subtotal are required.' });
-        }
-        
-        const code = couponCode.trim().toUpperCase();
-
-        // 1. Handle special 'FIRST1' coupon logic
-        if (code === 'FIRST1') {
-            const firstOrder = await Order.findOne({ userId });
-            
-            if (firstOrder) {
-                return res.json({ valid: false, message: 'FIRST1 is only applicable for your first order.' });
-            }
-
-            const discount = Math.max(0, subtotal - 1);
-            return res.json({
-                valid: true,
-                discount: Math.round(discount),
-                description: "Your first order for just ₹1"
-            });
-        }
-        
-        // 2. Look up generic coupon in Offer model
-        const offer = await Offer.findOne({ code, isActive: true });
-
-        if (!offer) {
-            return res.json({ valid: false, message: 'Invalid or expired coupon code.' });
-        }
-
-        // 3. Check minimum order value
-        if (subtotal < offer.minOrderValue) {
-            return res.json({
-                valid: false,
-                message: `Minimum order value of ₹${offer.minOrderValue} required.`
-            });
-        }
-        
-        // 4. Calculate discount
-        let discount = 0;
-        const discountValue = parseFloat(offer.discount.replace(/[^0-9.]/g, ''));
-        
-        if (offer.discount.includes('%')) {
-            // Percentage discount
-            discount = subtotal * (discountValue / 100);
-            if (offer.maxDiscount) {
-                discount = Math.min(discount, offer.maxDiscount);
-            }
-        } else {
-            // Fixed amount discount
-            discount = discountValue;
-        }
-
-        res.json({
-            valid: true,
-            discount: Math.round(discount),
-            description: offer.title || `Applied ${offer.discount} discount.`
-        });
-
-    } catch (error) {
-        console.error('Coupon validation error:', error);
-        res.status(500).json({ valid: false, message: 'Failed to validate coupon.' });
-    }
-});
 app.post("/api/notification", async (req, res) => {
   try {
     const { message } = req.body;
@@ -4301,8 +4551,578 @@ app.patch("/api/referrals/:id/update-status", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// Add Coupon
+app.post("/api/coupons", async (req, res) => {
+  try {
+    const coupon = new Coupon(req.body);
+    await coupon.save();
+    res.status(201).json(coupon);
+  } catch (error) {
+    res.status(500).json({ message: "Error creating coupon", error });
+  }
+});
+
+// Get All Coupons
+app.get("/api/coupons/available", async (req, res) => {
+  try {
+    const coupons = await Coupon.find().sort({ createdAt: -1 });
+    res.json(coupons);
+  } catch (error) {
+    res.status(500).json({ message: "Error fetching coupons", error });
+  }
+});
+
+app.post("/api/coupon/validate", async (req, res) => {
+  const { couponCode, subtotal } = req.body;
+
+  try {
+    // Find the coupon by code
+    const coupon = await Coupon.findOne({ code: couponCode });
+
+    if (!coupon) {
+      return res.status(404).json({ valid: false, message: "Invalid coupon code" });
+    }
+
+    if (!coupon.active) {
+      return res.status(400).json({ valid: false, message: "This coupon is disabled" });
+    }
+
+    if (coupon.expiresAt && new Date(coupon.expiresAt) < new Date()) {
+      return res.status(400).json({ valid: false, message: "Coupon has expired" });
+    }
+
+    if (coupon.minOrder && subtotal < coupon.minOrder) {
+      return res.status(400).json({
+        valid: false,
+        message: `Minimum order of ₹${coupon.minOrder} required`,
+        minOrder: coupon.minOrder,
+      });
+    }
+
+    // Calculate discount
+    let discount = 0;
+    if (coupon.type === "percentage") {
+      discount = (subtotal * coupon.value) / 100;
+    } else {
+      discount = coupon.value;
+    }
+
+    // Ensure final amount is not negative
+    const finalAmount = Math.max(subtotal - discount, 0);
+
+    res.json({
+      valid: true,
+      discount,
+      finalAmount,
+      type: coupon.type,
+      description: coupon.description || "Coupon applied successfully",
+      minOrder: coupon.minOrder || 0,
+      message: "Coupon applied successfully",
+    });
+  } catch (error) {
+    console.error("Coupon validation error:", error);
+    res.status(500).json({ valid: false, message: "Error validating coupon", error: error.message });
+  }
+});
 
 
+// Update Coupon
+app.put("/api/coupons/:id", async (req, res) => {
+  try {
+    const coupon = await Coupon.findByIdAndUpdate(req.params.id, req.body, {
+      new: true,
+    });
+    res.json(coupon);
+  } catch (error) {
+    res.status(500).json({ message: "Error updating coupon", error });
+  }
+});
+
+// Delete Coupon
+app.delete("/api/coupons/:id", async (req, res) => {
+  try {
+    await Coupon.findByIdAndDelete(req.params.id);
+    res.json({ message: "Coupon deleted successfully" });
+  } catch (error) {
+    res.status(500).json({ message: "Error deleting coupon", error });
+  }
+});
+
+// Toggle Active Status
+app.patch("/api/coupons/:id/toggle", async (req, res) => {
+  try {
+    const coupon = await Coupon.findById(req.params.id);
+    coupon.active = !coupon.active;
+    await coupon.save();
+    res.json(coupon);
+  } catch (error) {
+    res.status(500).json({ message: "Error toggling status", error });
+  }
+});
+
+app.post('/api/orders/check-offer-eligibility/:userId', authMiddleware, async (req, res) => {
+  try {
+    const { productIds } = req.body;
+    const requestedUserId = req.params.userId;
+    const authUserId = req.user._id;
+    
+    // Authorization
+    if (requestedUserId !== authUserId.toString() && !req.user.isAdmin) {
+      return res.status(403).json({
+        eligible: true,
+        restrictedProducts: [],
+        message: 'Unauthorized access'
+      });
+    }
+
+    if (!productIds || !Array.isArray(productIds)) {
+      return res.status(400).json({
+        eligible: true,
+        restrictedProducts: [],
+        message: 'No product IDs provided'
+      });
+    }
+
+    console.log('Checking offer eligibility for products:', productIds);
+
+    // Get the 1rs offer category ID
+    const oneRsOfferCategory = await OfferCategory.findOne({ name: '1rs' });
+    const oneRsCategoryId = oneRsOfferCategory?._id?.toString(); // Changed variable name
+    
+    console.log('1rs Offer Category ID:', oneRsCategoryId);
+    
+    if (!oneRsCategoryId) {
+      return res.json({ 
+        eligible: true, 
+        restrictedProducts: [], 
+        message: '1rs offer category not configured' 
+      });
+    }
+
+    // Get products
+    const products = await Product.find({ 
+      _id: { $in: productIds }
+    });
+
+    // Find which are 1rs offers
+    const offerProducts = products.filter(product => {
+      const productOfferCategoryId = product.category?.offerCategory?.toString ? 
+        product.category.offerCategory.toString() : 
+        product.category?.offerCategory;
+      
+      return productOfferCategoryId === oneRsCategoryId;
+    });
+
+    console.log('1rs products found:', offerProducts.length);
+
+    if (offerProducts.length === 0) {
+      return res.json({ 
+        eligible: true, 
+        restrictedProducts: [], 
+        message: 'No 1rs offer products in cart' 
+      });
+    }
+
+    const oneMonthAgo = new Date();
+    oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+    
+    const offerProductIds = offerProducts.map(p => p._id.toString());
+    
+    // Check recent orders
+    const recentPurchases = await Order.find({
+      userId: requestedUserId,
+      createdAt: { $gte: oneMonthAgo },
+      'items.productId': { $in: offerProductIds }
+    });
+
+    console.log('Recent purchases found:', recentPurchases.length);
+
+    const restrictedProducts = new Set();
+    
+    recentPurchases.forEach(order => {
+      order.items.forEach(item => {
+        const itemId = item.productId?.toString ? item.productId.toString() : item.productId;
+        if (offerProductIds.includes(itemId)) {
+          restrictedProducts.add(itemId);
+          console.log(`Found restricted product: ${itemId}`);
+        }
+      });
+    });
+
+    if (restrictedProducts.size > 0) {
+      return res.json({
+        eligible: false,
+        restrictedProducts: Array.from(restrictedProducts),
+        message: 'You have already purchased 1rs offer products in the last month'
+      });
+    }
+
+    res.json({ 
+      eligible: true, 
+      restrictedProducts: [], 
+      message: 'Eligible to purchase 1rs offer products' 
+    });
+    
+  } catch (error) {
+    console.error('Offer eligibility check error:', error);
+    res.json({ 
+      eligible: true, 
+      restrictedProducts: [], 
+      message: 'Unable to verify eligibility' 
+    });
+  }
+});
+
+// Get user's offer purchase history
+app.get('/api/orders/offer-purchase-history/:userId', async (req, res) => {
+  try {
+    const requestedUserId = req.params.userId;
+    const authUserId = req.user.id;
+    
+    // Check if user is requesting their own data or is admin
+    if (requestedUserId !== authUserId && !req.user.isAdmin) {
+      return res.status(403).json({ 
+        error: 'Unauthorized access',
+        purchasedOffers: [],
+        canPurchase: true
+      });
+    }
+
+    const oneMonthAgo = new Date();
+    oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+    
+    const offerOrders = await Order.find({
+      userId: requestedUserId,
+      status: { $in: ['confirmed', 'processing', 'shipped', 'delivered'] },
+      createdAt: { $gte: oneMonthAgo }
+    }).populate('items.productId', 'title price category');
+    
+    const purchasedOffers = [];
+    let lastPurchaseDate = null;
+    
+    offerOrders.forEach(order => {
+      order.items.forEach(item => {
+        if (item.productId?.category?.offerCategory?.name === '1rs') {
+          purchasedOffers.push({
+            productId: item.productId._id,
+            title: item.productId.title,
+            price: item.price,
+            purchasedAt: order.createdAt,
+            orderId: order.orderId
+          });
+          
+          if (!lastPurchaseDate || order.createdAt > lastPurchaseDate) {
+            lastPurchaseDate = order.createdAt;
+          }
+        }
+      });
+    });
+    
+    const canPurchase = purchasedOffers.length === 0;
+    
+    res.json({
+      purchasedOffers,
+      lastPurchaseDate,
+      canPurchase,
+      message: canPurchase 
+        ? 'You can purchase 1rs offer products' 
+        : 'You have already purchased 1rs offer products this month'
+    });
+    
+  } catch (error) {
+    console.error('Get offer purchase history error:', error);
+    res.status(500).json({ 
+      error: 'Failed to get offer purchase history',
+      purchasedOffers: [],
+      canPurchase: true
+    });
+  }
+});
+
+// Add this debug endpoint
+app.get('/api/debug/offer-products/:productId', async (req, res) => {
+  try {
+    const product = await Product.findById(req.params.productId);
+    res.json({
+      product: {
+        id: product._id,
+        title: product.title,
+        price: product.price,
+        category: product.category,
+        is1rs: product.category?.offerCategory?.name === '1rs'
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Check user's purchase history
+app.get('/api/debug/user-purchases/:userId', async (req, res) => {
+  try {
+    const oneMonthAgo = new Date();
+    oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+    
+    const purchases = await Order.find({
+      userId: req.params.userId,
+      createdAt: { $gte: oneMonthAgo }
+    }).populate('items.productId', 'title category');
+    
+    res.json({
+      purchases: purchases.map(order => ({
+        orderId: order.orderId,
+        createdAt: order.createdAt,
+        items: order.items.map(item => ({
+          productId: item.productId?._id,
+          title: item.productId?.title,
+          is1rs: item.productId?.category?.offerCategory?.name === '1rs'
+        }))
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+app.get('/api/debug/offer-validation/:userId', async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const productId = req.query.productId || '692ac358056b77fb5cdd5fc5'; // banana product ID
+    
+    console.log('=== DEBUG OFFER VALIDATION ===');
+    console.log('User ID:', userId);
+    console.log('Product ID:', productId);
+    
+    // 1. Check the product directly
+    const product = await Product.findById(productId);
+    console.log('\n1. PRODUCT DETAILS:');
+    console.log('Product ID:', product?._id);
+    console.log('Product Title:', product?.title);
+    console.log('Product Price:', product?.price);
+    console.log('Product Category:', JSON.stringify(product?.category, null, 2));
+    console.log('Is 1rs offer?', product?.category?.offerCategory?.name === '1rs');
+    
+    // 2. Check user's recent purchases
+    const oneMonthAgo = new Date();
+    oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+    
+    const purchases = await Order.find({
+      userId: userId,
+      createdAt: { $gte: oneMonthAgo }
+    }).lean();
+    
+    console.log('\n2. USER PURCHASES (last month):');
+    console.log('Total purchases:', purchases.length);
+    
+    // 3. Check specific orders for this product
+    const ordersWithProduct = purchases.filter(order => 
+      order.items.some(item => item.productId.toString() === productId)
+    );
+    
+    console.log('\n3. ORDERS CONTAINING THIS PRODUCT:');
+    console.log('Number of orders with this product:', ordersWithProduct.length);
+    
+    ordersWithProduct.forEach((order, index) => {
+      console.log(`\n  Order ${index + 1}:`);
+      console.log('  Order ID:', order.orderId);
+      console.log('  Created:', order.createdAt);
+      console.log('  Status:', order.status);
+      const item = order.items.find(i => i.productId.toString() === productId);
+      console.log('  Item quantity:', item?.quantity);
+      console.log('  Item price:', item?.price);
+    });
+    
+    // 4. Check if any of these orders have isOfferProduct flag
+    const offerPurchases = purchases.filter(order => 
+      order.items.some(item => 
+        item.productId.toString() === productId && 
+        item.isOfferProduct === true
+      )
+    );
+    
+    console.log('\n4. ORDERS MARKED AS OFFER PURCHASES:');
+    console.log('Orders with isOfferProduct=true:', offerPurchases.length);
+    
+    // 5. Check OfferPurchase collection
+    const offerPurchaseRecords = await OfferPurchase.find({
+      userId: userId,
+      productId: productId
+    }).lean();
+    
+    console.log('\n5. OFFERPURCHASE COLLECTION RECORDS:');
+    console.log('Records found:', offerPurchaseRecords.length);
+    offerPurchaseRecords.forEach((record, index) => {
+      console.log(`\n  Record ${index + 1}:`);
+      console.log('  Order ID:', record.orderId);
+      console.log('  Purchase Date:', record.purchaseDate);
+      console.log('  Expires At:', record.expiresAt);
+    });
+    
+    // 6. Check current eligibility
+    const canPurchase = offerPurchaseRecords.length === 0;
+    
+    console.log('\n6. ELIGIBILITY SUMMARY:');
+    console.log('Can purchase?', canPurchase);
+    console.log('Reason:', canPurchase ? 'No previous purchase found' : 'Already purchased in last 30 days');
+    
+    res.json({
+      product: {
+        _id: product?._id,
+        title: product?.title,
+        price: product?.price,
+        category: product?.category,
+        is1rsOffer: product?.category?.offerCategory?.name === '1rs'
+      },
+      purchases: {
+        total: purchases.length,
+        withThisProduct: ordersWithProduct.length,
+        markedAsOffer: offerPurchases.length
+      },
+      offerPurchaseRecords: offerPurchaseRecords.length,
+      eligibility: {
+        canPurchase: canPurchase,
+        reason: canPurchase ? 'Eligible to purchase' : 'Already purchased in last 30 days'
+      },
+      debug: {
+        productStructure: product?.category,
+        hasOfferCategory: !!product?.category?.offerCategory,
+        offerCategoryName: product?.category?.offerCategory?.name,
+        offerCategoryMatch: product?.category?.offerCategory?.name === '1rs'
+      }
+    });
+    
+  } catch (error) {
+    console.error('Debug error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+app.get('/api/debug/product-structure/:productId', async (req, res) => {
+  try {
+    const product = await Product.findById(req.params.productId).lean();
+    
+    console.log('=== PRODUCT STRUCTURE DEBUG ===');
+    console.log('Full product:', JSON.stringify(product, null, 2));
+    
+    // Check nested structure
+    console.log('\nCategory path check:');
+    console.log('product.category:', product?.category);
+    console.log('product.category?.offerCategory:', product?.category?.offerCategory);
+    console.log('product.category?.offerCategory?.name:', product?.category?.offerCategory?.name);
+    
+    res.json({
+      product: product,
+      structure: {
+        hasCategory: !!product?.category,
+        categoryType: typeof product?.category,
+        hasOfferCategory: !!product?.category?.offerCategory,
+        offerCategoryName: product?.category?.offerCategory?.name,
+        is1rs: product?.category?.offerCategory?.name === '1rs',
+        fullPath: 'category.offerCategory.name'
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+app.get('/api/debug/offer-category-check', async (req, res) => {
+  try {
+    // Check if OfferCategory model exists and has 1rs category
+    const oneRsCategory = await OfferCategory.findOne({ name: '1rs' });
+    
+    if (!oneRsCategory) {
+      return res.json({
+        found: false,
+        message: '1rs offer category not found in OfferCategory collection',
+        suggestion: 'Create an OfferCategory document with name: "1rs"'
+      });
+    }
+    
+    // Check some products to see their offerCategory
+    const sampleProducts = await Product.find({
+      'category.offerCategory': { $exists: true }
+    }).limit(5);
+    
+    res.json({
+      found: true,
+      offerCategory: {
+        _id: oneRsCategory._id,
+        name: oneRsCategory.name,
+        idString: oneRsCategory._id.toString()
+      },
+      sampleProducts: sampleProducts.map(p => ({
+        _id: p._id,
+        title: p.title,
+        price: p.price,
+        offerCategory: p.category?.offerCategory,
+        offerCategoryType: typeof p.category?.offerCategory,
+        isString: typeof p.category?.offerCategory === 'string',
+        isObject: typeof p.category?.offerCategory === 'object'
+      }))
+    });
+    
+  } catch (error) {
+    res.status(500).json({ 
+      error: error.message,
+      note: 'Make sure OfferCategory model is properly defined and imported'
+    });
+  }
+});
+
+// Backend API endpoint for sales report
+app.get('/api/reports/sales', authMiddleware, async (req, res) => {
+  try {
+    const { startDate, endDate, category, paymentMethod } = req.query;
+    
+    const matchStage = {
+      status: { $in: ['confirmed', 'processing', 'shipped', 'delivered'] },
+      createdAt: {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate + 'T23:59:59.999Z')
+      }
+    };
+
+    if (paymentMethod) {
+      matchStage.paymentMethod = paymentMethod;
+    }
+
+    // Daily sales aggregation
+    const dailySales = await Order.aggregate([
+      { $match: matchStage },
+      {
+        $group: {
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+          revenue: { $sum: '$total' },
+          orders: { $sum: 1 }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+
+    // Summary aggregation
+    const summary = await Order.aggregate([
+      { $match: matchStage },
+      {
+        $group: {
+          _id: null,
+          totalRevenue: { $sum: '$total' },
+          totalOrders: { $sum: 1 }
+        }
+      }
+    ]);
+
+    res.json({
+      summary: summary[0] || { totalRevenue: 0, totalOrders: 0 },
+      dailySales: dailySales.map(day => ({
+        _id: day._id,
+        revenue: day.revenue,
+        orders: day.orders
+      }))
+    });
+
+  } catch (error) {
+    console.error('Sales report error:', error);
+    res.status(500).json({ message: 'Error generating sales report' });
+  }
+});
 app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK', 
@@ -4322,14 +5142,9 @@ app.use((error, req, res, next) => {
   
   res.status(500).json({ error: 'Something went wrong!' });
 });
-
-// 404 Handler
 app.use((req, res) => {
   res.status(404).json({ error: 'Route not found' });
 });
-
-// ==================== START SERVER ====================
-
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
